@@ -1,10 +1,10 @@
 """
-Robot dance
+Robot dance single location
 
 Implements an automatic control framework to design efficient mitigation strategies
 for Covid-19 based on the control of a SEIR model.
 
-Copyright: Paulo J. S. Silva <pjssilva@unicamp.br>, 2020.
+Copyright: Paulo J. S. Silva <pjssilva@unicamp.br>, 2021.
 """
 
 using JuMP
@@ -141,7 +141,7 @@ Expand rt to a full prm.ndays vector.
 function expand(rt, prm)
     full_rt = zeros(prm.ncities, prm.ndays)
     for c in 1:prm.ncities, d in 1:prm.ndays
-        full_rt[c, d] = rt[c, mapind(d, prm)]
+        full_rt[c, d] = rt[mapind(d, prm)]
     end
     return full_rt
 end
@@ -177,10 +177,6 @@ parameters are not initialized and remain free. This can be useful, for example,
 initial parameters to observed data.
 """
 function seir_model_with_free_initial_values(prm, verbosity=0, tau=3, test_efficacy=0.8)
-    # Save work and get col indices of both M and Mt
-    coli_M = [findnz(prm.M[:,c])[1] for c in 1:prm.ncities]
-    coli_Mt = [findnz(prm.Mt[:,c])[1] for c in 1:prm.ncities]
-
     # Create the optimization model.
     # I am reverting to mumps because I can not limit ma97 to use
     # only the actual cores in my machine and mumps seems to be doing 
@@ -207,29 +203,20 @@ function seir_model_with_free_initial_values(prm, verbosity=0, tau=3, test_effic
     if verbosity >= 1
         println("Adding variables to the model...")
     end
-    @variable(m, 0.0 <= s[1:prm.ncities, 1:prm.ndays] <= 1.0)
-    @variable(m, 0.0 <= e[1:prm.ncities, 1:prm.ndays] <= 1.0)
-    @variable(m, 0.0 <= i[1:prm.ncities, 1:prm.ndays] <= 1.0)
-    @variable(m, 0.0 <= q[1:prm.ncities, 1:prm.ndays] <= 1.0)
-    @variable(m, 0.0 <= r[1:prm.ncities, 1:prm.ndays] <= 1.0)
-    @variable(m, 0.0 <= test[1:prm.ncities, 1:prm.ndays] <= 1.0)
-
-    # Constants that define the testing impact
-    test_const = 1/prm.sars_over_cov*test_efficacy*exp(-tau/prm.tinf)
+    @variable(m, 0.0 <= s[1:prm.ndays] <= 1.0)
+    @variable(m, 0.0 <= e[1:prm.ndays] <= 1.0)
+    @variable(m, 0.0 <= i[1:prm.ndays] <= 1.0)
+    @variable(m, 0.0 <= r[1:prm.ndays] <= 1.0)
 
     # Control variable
-    @variable(m, 0.0 <= rt[1:prm.ncities, 1:prm.window:prm.ndays] <= prm.rep)
+    @variable(m, 0.0 <= rt[1:prm.window:prm.ndays] <= prm.rep)
     
     # Extra variables to better separate linear and nonlinear expressions and
     # to decouple and "sparsify" the matrices.
     # Obs. I tried many variations, only adding the variable below worded the best.
     #      I tried to get rid of all SEIR variables and use only the initial conditions.
     #      Add variables for sp, ep, ip, rp. Add a variable to represent s times i.
-    @variable(m, p_eff_p_c[1:prm.ncities, 1:prm.ndays])
-    @variable(m, i_eff_p_c[1:prm.ncities, 1:prm.ndays])
-    @variable(m, i_eff[1:prm.ncities, t=1:prm.ndays])
-    @variable(m, rti_eff[1:prm.ncities, t=1:prm.ndays])
-    @variable(m, rti[1:prm.ncities, t=1:prm.ndays])
+    @variable(m, rti[t=1:prm.ndays])
     if verbosity >= 1
         println("Adding variables to the model... Ok!")
     end
@@ -239,51 +226,10 @@ function seir_model_with_free_initial_values(prm, verbosity=0, tau=3, test_effic
         println("Defining additional expressions...")
     end
 
-    @expression(m, can_travel[c=1:prm.ncities, t=1:prm.ndays], 
-        1.0 - q[c, t]
-    )
-
-    @expression(m, alt_out[c=1:prm.ncities, d=1:prm.window:prm.ndays],
-        sum(rt[k, d]/prm.rep*prm.Mt[k, c] for k in coli_Mt[c])
-    )
-    @expression(m, dest_orig[c=1:prm.ncities, k in coli_M[c], d=1:prm.window:prm.ndays],
-        rt[c, d]/prm.rep*prm.M[k, c]
-    )
-    @expression(m, orig_dest[c=1:prm.ncities, k in coli_Mt[c], d=1:prm.window:prm.ndays],
-        rt[k, d]/prm.rep*prm.Mt[k, c]
-    )
-
-    # p_eff_p_c denotes the proportion of the effective population at city c
-    # during the day divided by the original population of city c
-
-    @constraint(m, [c=1:prm.ncities, t=1:prm.ndays],
-        p_eff_p_c[c, t] == 1.0 - alt_out[c, mapind(t, prm)]*can_travel[c, t] + 
-            sum(dest_orig[c, k, mapind(t, prm)]*can_travel[k, t] for k in coli_M[c])
-    )
-    # i_eff_p_c denotes the proportion of the effective number of infected at city c
-    # during the day divided by the original population of city c
-    @constraint(m, [c=1:prm.ncities, t=1:prm.ndays],
-        i_eff_p_c[c, t] == (1.0 - alt_out[c, mapind(t, prm)])*i[c, t] +
-            sum(dest_orig[c, k, mapind(t, prm)]*i[k, t] for k in coli_M[c])
-    )
-    # i_eff is the effective ratio of inffected in city c
-    @constraint(m, [c=1:prm.ncities, t=1:prm.ndays], 
-        i_eff[c, t]*p_eff_p_c[c, t] == i_eff_p_c[c, t]
-    )
-
-    # rti is rt at city c times the i_eff at city c
-    @constraint(m, [c=1:prm.ncities, t=1:prm.ndays],
-        rti_eff[c, t] == rt[c, mapind(t, prm)]*i_eff[c, t]
-    )
-
-    @constraint(m, [c=1:prm.ncities, t=1:prm.ndays],
-        rti[c, t] == rt[c, mapind(t, prm)]*i[c, t]
+    @constraint(m, [t=1:prm.ndays],
+        rti[t] == rt[mapind(t, prm)]*i[t]
     )
     
-    # Parameter that measures how much important is the infection during the day
-    # when compared to the night.
-    α = 2/3
-
     # Compute the gradients at time t of the SEIR model.
 
     # Estimates the infection rate of the susceptible people from city c
@@ -291,34 +237,17 @@ function seir_model_with_free_initial_values(prm, verbosity=0, tau=3, test_effic
     if verbosity >= 1
         println("Defining SEIR equations...")
     end
-    @variable(m, one_minus_out_s[c=1:prm.ncities, t=1:prm.ndays])
-    @constraint(m, [c=1:prm.ncities, t=1:prm.ndays],
-        one_minus_out_s[c, t] == (1.0 - alt_out[c, mapind(t, prm)])*s[c, t]
-    )
-    @variable(m, orig_dest_s[c=1:prm.ncities, k in coli_Mt[c], t=1:prm.ndays])
-    @constraint(m, [c=1:prm.ncities, k in coli_Mt[c], t=1:prm.ndays],
-        orig_dest_s[c, k, t] == orig_dest[c, k, mapind(t, prm)]*s[c, t]
-    )
-    @expression(m, ds[c=1:prm.ncities, t=1:prm.ndays],
-        -1.0/prm.tinf*(
-        α*( one_minus_out_s[c,t]*rti_eff[c, t] +
-            sum(orig_dest_s[c, k, t]*rti_eff[k, t] for k = coli_Mt[c]) ) 
-        + (1 - α)*s[c, t]*rti[c, t]
-       )
+    @expression(m, ds[t=1:prm.ndays],
+        -1.0/prm.tinf*s[t]*rti[t]
     )
     @expression(m, de[c=1:prm.ncities, t=1:prm.ndays],
-        -ds[c, t] - (1.0/prm.tinc)*e[c,t]
+        -ds[t] - (1.0/prm.tinc)*e[t]
     )
-    @expression(m, di[c=1:prm.ncities, t=1:prm.ndays],
-        (1.0/prm.tinc)*e[c, t] - (1.0/prm.tinf)*(i[c, t] + test_const*test[c, t])
+    @expression(m, di[t=1:prm.ndays],
+        (1.0/prm.tinc)*e[t] - (1.0/prm.tinf)*i[t]
     )
-    # TODO: add a Tq in prm?
-    tq = 3*prm.tinf
-    @expression(m, dq[c=1:prm.ncities, t=1:prm.ndays],
-        test_const/prm.tinf*test[c, t] - 1.0/tq*q[c, t]
-    )
-    @expression(m, dr[c=1:prm.ncities, t=1:prm.ndays],
-        1/tq*q[c, t] + (1.0/prm.tinf)*i[c, t]
+    @expression(m, dr[t=1:prm.ndays],
+       (1.0/prm.tinf)*i[t]
     )
     if verbosity >= 1
         println("Defining SEIR equations... Ok!")
@@ -340,20 +269,17 @@ function seir_model_with_free_initial_values(prm, verbosity=0, tau=3, test_effic
             end
         end
 
-        @constraint(m, [c=1:prm.ncities, t=2:prm.ndays],
-            s[c, t] == s[c, t - 1] + (k_prev_t*ds[c, t-1] + k_curr_t*ds[c, t])*dt
+        @constraint(m, [t=2:prm.ndays],
+            s[t] == s[t - 1] + (k_prev_t*ds[t - 1] + k_curr_t*ds[t])*dt
         )
-        @constraint(m, [c=1:prm.ncities, t=2:prm.ndays],
-            e[c, t] == e[c, t - 1] + (k_prev_t*de[c, t-1] + k_curr_t*de[c, t])*dt
+        @constraint(m, [t=2:prm.ndays],
+            e[t] == e[t - 1] + (k_prev_t*de[t - 1] + k_curr_t*de[t])*dt
         )
-        @constraint(m, [c=1:prm.ncities, t=2:prm.ndays],
-            i[c, t] == i[c, t - 1] + (k_prev_t*di[c, t-1] + k_curr_t*di[c, t])*dt
+        @constraint(m, [t=2:prm.ndays],
+            i[t] == i[t - 1] + (k_prev_t*di[t - 1] + k_curr_t*di[t])*dt
         )
-        @constraint(m, [c=1:prm.ncities, t=2:prm.ndays],
-            q[c, t] == q[c, t - 1] + (k_prev_t*dq[c, t-1] + k_curr_t*dq[c, t])*dt
-        )
-        @constraint(m, [c=1:prm.ncities, t=2:prm.ndays],
-            r[c, t] == r[c, t - 1] + (k_prev_t*dr[c, t-1] + k_curr_t*dr[c, t])*dt
+        @constraint(m, [t=2:prm.ndays],
+            r[t] == r[t - 1] + (k_prev_t*dr[t - 1] + k_curr_t*dr[t])*dt
         )
         if verbosity >= 1
             println("Discretizing SEIR equations... Ok!")
@@ -375,15 +301,11 @@ function seir_model(prm, verbosity, tau=3, test_efficacy=0.8)
     m = seir_model_with_free_initial_values(prm, verbosity, tau, test_efficacy)
 
     # Initial state
-    s1, e1, i1, q1, r1 = m[:s][:, 1], m[:e][:, 1], m[:i][:, 1], m[:q][:, 1], m[:r][:, 1]
-    for c in 1:prm.ncities
-        fix(s1[c], prm.s1[c]; force=true)
-        fix(e1[c], prm.e1[c]; force=true)
-        fix(i1[c], prm.i1[c]; force=true)
-        fix(r1[c], prm.r1[c]; force=true)
-        fix(q1[c], 
-            max(0.0, 1.0 - prm.s1[c] - prm.e1[c] - prm.i1[c] - prm.r1[c]); force=true)
-    end
+    s1, e1, i1, r1 = m[:s][1], m[:e][1], m[:i][1], m[:r][1]
+        fix(s1, prm.s1[1]; force=true)
+        fix(e1, prm.e1[1]; force=true)
+        fix(i1, prm.i1[1]; force=true)
+        fix(r1, prm.r1[1]; force=true)
     return m
 end
 
@@ -399,10 +321,8 @@ function fixed_rt_model(prm)
     rt = m[:rt]
 
     # Fix all rts
-    for c = 1:prm.ncities
-        for t = 1:prm.window:prm.ndays
-            fix(rt[c, t], prm.rep; force=true)
-        end
+    for t = 1:prm.window:prm.ndays
+        fix(rt[t], prm.rep; force=true)
     end
     return m
 end
@@ -427,39 +347,35 @@ function fit_initial(tinc, tinf, rep, time_icu, data, ttv_weight=0.25)
     m = seir_model_with_free_initial_values(prm)
 
     # Initial state
-    s1, e1, i, q, r1, rt, test = m[:s][1, 1], m[:e][1, 1], m[:i], m[:q], m[:r][1, 1], m[:rt], m[:test]
+    s1, e1, i, r1, rt = m[:s][1], m[:e][1], m[:i], m[:r][1], m[:rt]
     set_start_value(r1, prm.r1[1])
     set_start_value(s1, prm.s1[1])
     set_start_value(e1, prm.e1[1])
-    set_start_value(i[1, 1], prm.i1[1])
-    for c =1:prm.ncities, d=1:prm.ndays
-        fix(test[c, d], 0.0; force=true)
-        fix(q[c, d], 0.0; force=true)
-    end
+    set_start_value(i[1], prm.i1[1])
 
     # Define upper bounds on rt
     for t = 1:prm.window:prm.ndays
-        set_upper_bound(rt[1, t], 10*prm.rep)
+        set_upper_bound(rt[t], 10*prm.rep)
     end
 
     # USed to compute the total rt variation
     @variable(m, ttv[2:prm.ndays])
-    @constraint(m, con_ttv[i=2:prm.ndays], ttv[i] >= rt[1, i - 1] - rt[1, i])
-    @constraint(m, con_ttv2[i=2:prm.ndays], ttv[i] >= rt[1, i] - rt[1, i - 1])
+    @constraint(m, con_ttv[i=2:prm.ndays], ttv[i] >= rt[i - 1] - rt[i])
+    @constraint(m, con_ttv2[i=2:prm.ndays], ttv[i] >= rt[i] - rt[i - 1])
 
     # SEIR contraint
-    @constraint(m, s1 + e1 + i[1, 1] + r1 == 1.0)
+    @constraint(m, s1 + e1 + i[1] + r1 == 1.0)
 
     # Define objective function
     # Compute a scaling factor so as a least square objective makes more sense
     valid = (t for t = 1:prm.ndays if data[t] > 0)
-    @NLobjective(m, Min, sum((i[1, t]/data[t] - 1.0)^2 for t in valid) + ttv_weight*sum(ttv[t] for t = 2:prm.ndays))
+    @NLobjective(m, Min, sum((i[t]/data[t] - 1.0)^2 for t in valid) + ttv_weight*sum(ttv[t] for t = 2:prm.ndays))
 
     # Optimize
     optimize!(m)
 
-    return value(m[:s][1, prm.ndays]), value(m[:e][1, prm.ndays]), 
-        value(m[:i][1, prm.ndays]), value(m[:r][1, prm.ndays]), value.(rt[1, :])
+    return value(m[:s][prm.ndays]), value(m[:e][prm.ndays]), 
+        value(m[:i][prm.ndays]), value(m[:r][prm.ndays]), value.(rt[:])
 end
 
 
@@ -500,12 +416,12 @@ function window_control_multcities(prm, population, target, force_difference,
     # Fix rt during hammer phase
     rt = m[:rt]
     for c = 1:prm.ncities, d = 1:prm.window:hammer_duration[c]
-        fix(rt[c, d], hammer[c]; force=true)
+        fix(rt[d], hammer[c]; force=true)
     end
     
     # Set the minimum rt achievable after the hammer phase.
     for c = 1:prm.ncities, d = hammer_duration[c] + 1:prm.window:prm.ndays
-        set_lower_bound(rt[c, d], min_rt)
+        set_lower_bound(rt[d], min_rt)
     end
     if verbosity >= 1
         println("Setting limits for rt... Ok!")
@@ -538,7 +454,7 @@ function window_control_multcities(prm, population, target, force_difference,
         # As in the paper, V represents the number of people that will leave
         # infected and potentially go to ICU.
         @constraint(m, [d=first_pool_day[p]:prm.ndays - prm.time_icu],
-            V[p, d] == prm.time_icu/prm.tinf*sum(population[c]*i[c, d] for c in pool) / pool_population[p]
+            V[p, d] == prm.time_icu/prm.tinf*sum(population[c]*i[d] for c in pool) / pool_population[p]
         )
 
         for d in 1:prm.ndays - prm.time_icu
@@ -551,51 +467,6 @@ function window_control_multcities(prm, population, target, force_difference,
             end
         end
     end
-
-    # Constraints on the tests
-    if test_budget > 0
-        test, i = m[:test], m[:i]
-        max_pop = maximum(population)
-        # Only use the given budget of tests
-        @expression(m, total_tests[d=1:prm.ndays],
-            sum(population[c]*test[c, d] for c = 1:prm.ncities) 
-        )
-        @constraint(m, use_test_available,
-            sum(total_tests)/max_pop <= test_budget/max_pop
-        )
-        # Maximal ammount of daily test
-        @constraint(m, max_day[d=1:prm.ndays],
-            total_tests[d]/max_pop <= daily_tests/max_pop
-        )
-
-        @constraint(m, test_only_present[c=1:prm.ncities, d=1:prm.ndays],
-            test[c, d] <= prm.sars_over_cov * prm.sick_tested * i[c, d] / prm.tinf
-        )
-
-        # Disallow test in some regions.
-        for c in tests_off
-            for d = 1:prm.ndays
-                fix(test[c, d], 0.0; force=true)
-            end
-        end 
-
-        # Limit tests to the proportion of infected in the privious day
-        if proportional_test
-            @expression(m, total_infected[d=1:prm.ndays],
-                sum(i[c, d]*population[c] for c = 1:prm.ncities)
-            )
-            @constraint(m, proprional_tests[c=1:prm.ncities, d=2:prm.ndays],
-                test[c, d]*total_infected[d - 1]/max_pop <= i[c, d - 1]*total_tests[d]/max_pop
-            )
-        end
-
-    else
-        test = m[:test]
-        for c = 1:prm.ncities, d = 1:prm.ndays
-            fix(test[c, d], 0.0; force=true)
-        end
-    end
-    
 
     if verbosity >= 1
         println("Setting limits for number of infected... Ok!")
@@ -614,16 +485,16 @@ function window_control_multcities(prm, population, target, force_difference,
     # Define objective
     @objective(m, Min,
         # Try to keep as many people working as possible
-        prm.window*sum(effect_pop[c]/mean_population*(prm.rep - rt[c, d])
+        prm.window*sum(effect_pop[c]/mean_population*(prm.rep - rt[d])
             for c = 1:prm.ncities for d = hammer_duration[c]+1:prm.window:prm.ndays) -
         # Induce bang-bang
         0.02*prm.alternate*prm.window*sum(
             force_difference[c, d]*effect_pop[c]/mean_population*
-            (prm.rep - rt[c, d])*(min_rt - rt[c, d])
+            (prm.rep - rt[d])*(min_rt - rt[d])
             for c = 1:prm.ncities for d = hammer_duration[c]+1:prm.window:prm.ndays) -
         # Try to alternate within a single city.
         0.5*prm.alternate*prm.window/(prm.rep^2)*sum(
-            force_difference[c, d]*(rt[c, d] - rt[c, d - prm.window])^2 
+            force_difference[c, d]*(rt[d] - rt[d - prm.window])^2 
             for c = 1:prm.ncities 
             for d = hammer_duration[c] + prm.window + 1:prm.window:prm.ndays
         ) -
@@ -631,7 +502,7 @@ function window_control_multcities(prm, population, target, force_difference,
         0.5*prm.alternate*prm.window/(prm.rep^2)*sum(
             minimum((effect_pop[c], effect_pop[cl]))*
             minimum((dif_matrix[c, d], dif_matrix[cl, d]))*
-            (rt[c, d] - rt[cl, d])^2
+            (rt[d] - rt[d])^2
             for c = 1:prm.ncities 
             for cl = c + 1:prm.ncities 
             for d = hammer_duration[c] + 1:prm.window:prm.ndays
@@ -664,7 +535,7 @@ function add_ramp(m, prm, hammer_duration, delta_rt_max, verbosity=0)
     end
     rt = m[:rt]
     @constraint(m, [c=1:prm.ncities, d = hammer_duration[c] + 1:prm.window:prm.ndays],
-    rt[c, d] - rt[c, d - prm.window] <= delta_rt_max
+    rt[d] - rt[d - prm.window] <= delta_rt_max
     )
     if verbosity >= 1
         println("Adding ramp constraints (delta_rt_max = $delta_rt_max)... Ok!")

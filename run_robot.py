@@ -370,7 +370,8 @@ def check_error_optim(basic_prm, cities_data, mob_matrix, dir_output, verbosity=
     y0 = np.append(y0, cities_data["I1"].values)
     y0 = np.append(y0, cities_data["R1"].values)
 
-    Julia.eval("s = value.(m[:s]); e = value.(m[:e]); i = value.(m[:i]); r = value.(m[:r])")
+    Julia.eval("s = reshape(value.(m[:s]), (1, :)); e = reshape(value.(m[:e]), (1, :))")
+    Julia.eval("i = reshape(value.(m[:i]), (1, :)); r = reshape(value.(m[:r]), (1, :))")
     Julia.eval("rt = expand(value.(m[:rt]), prm)")
     t_in = teval
     rt_in = Julia.rt
@@ -537,10 +538,12 @@ def save_result(basic_prm, cities_data, target, filename):
     """
     cities_names = cities_data.index
     n_cities = len(cities_names)
-    Julia.eval("s = value.(m[:s]); e = value.(m[:e]); i = value.(m[:i]); r = value.(m[:r])")
+    Julia.eval("s = reshape(value.(m[:s]), (1, :)); e = reshape(value.(m[:e]), (1, :))")
+    Julia.eval("i = reshape(value.(m[:i]), (1, :)); r = reshape(value.(m[:r]), (1, :))")
     Julia.eval("rt = expand(value.(m[:rt]), prm)")
     n = len(Julia.s[0, :])
-    Julia.eval("test = value.(m[:test])")
+    #Julia.eval("test = value.(m[:test])")
+    Julia.eval("test = zero(s)")
     df = []
 
     for i in range(n_cities):
@@ -586,9 +589,12 @@ def optimize_and_show_results(basic_prm, figure_file, data_file, cities_data, ta
 
     Julia.eval("""
         optimize!(m)
-        pre_rt = value.(m[:rt]); i = value.(m[:i])
+        i = reshape(value.(m[:i]), (1, :))
+        println("i = ", i)
+        pre_rt = value.(m[:rt])
+        println("pre_rt = ", pre_rt)
         rt = expand(pre_rt, prm)
-        test = value.(m[:test])
+        test = zero(i)
     """)
 
     if verbosity >= 1:
