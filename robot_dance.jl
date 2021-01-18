@@ -235,24 +235,13 @@ function seir_model_with_free_initial_values(prm, verbosity=0, tau=3, test_effic
     end
 
     # Expressions that define "sub-states"
-
-    # Parameter that determines the proportion of I that can not travel.
-    FIXED_I = 0.0
-    CAN_TRAVEL_I = 1.0 - FIXED_I
-
     if verbosity >= 1
         println("Defining additional expressions...")
     end
 
-    if FIXED_I > 0
-        @expression(m, can_travel[c=1:prm.ncities, t=1:prm.ndays],
-            1.0 - FIXED_I*i[c, t] - q[c, t]
-        )
-    else
-        @expression(m, can_travel[c=1:prm.ncities, t=1:prm.ndays], 
-            1.0 - q[c, t]
-        )
-    end
+    @expression(m, can_travel[c=1:prm.ncities, t=1:prm.ndays], 
+        1.0 - q[c, t]
+    )
 
     @expression(m, alt_out[c=1:prm.ncities, d=1:prm.window:prm.ndays],
         sum(rt[k, d]/prm.rep*prm.Mt[k, c] for k in coli_Mt[c])
@@ -274,8 +263,8 @@ function seir_model_with_free_initial_values(prm, verbosity=0, tau=3, test_effic
     # i_eff_p_c denotes the proportion of the effective number of infected at city c
     # during the day divided by the original population of city c
     @constraint(m, [c=1:prm.ncities, t=1:prm.ndays],
-        i_eff_p_c[c, t] == (1.0 - alt_out[c, mapind(t, prm)]*CAN_TRAVEL_I)*i[c, t] +
-            sum(dest_orig[c, k, mapind(t, prm)]*CAN_TRAVEL_I*i[k, t] for k in coli_M[c])
+        i_eff_p_c[c, t] == (1.0 - alt_out[c, mapind(t, prm)])*i[c, t] +
+            sum(dest_orig[c, k, mapind(t, prm)]*i[k, t] for k in coli_M[c])
     )
     # i_eff is the effective ratio of inffected in city c
     @constraint(m, [c=1:prm.ncities, t=1:prm.ndays], 
