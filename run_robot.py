@@ -538,8 +538,8 @@ def save_result(basic_prm, cities_data, target, filename):
     """
     cities_names = cities_data.index
     n_cities = len(cities_names)
-    Julia.eval("s = reshape(value.(m[:s]), (1, :)); e = reshape(value.(m[:e]), (1, :))")
-    Julia.eval("i = reshape(value.(m[:i]), (1, :)); r = reshape(value.(m[:r]), (1, :))")
+    Julia.eval("s = reshape(value.(m[:s][1, :]), (1, :)); e = reshape(value.(m[:e][1, :]), (1, :))")
+    Julia.eval("i = reshape(value.(m[:i][1, :]), (1, :)); r = reshape(value.(m[:r][1, :]), (1, :))")
     Julia.eval("rt = expand(value.(m[:rt]), prm)")
     n = len(Julia.s[0, :])
     #Julia.eval("test = value.(m[:test])")
@@ -589,10 +589,8 @@ def optimize_and_show_results(basic_prm, figure_file, data_file, cities_data, ta
 
     Julia.eval("""
         optimize!(m)
-        i = reshape(value.(m[:i]), (1, :))
-        println("i = ", i)
+        i = reshape(value.(m[:i][1, :]), (1, :))
         pre_rt = value.(m[:rt])
-        println("pre_rt = ", pre_rt)
         rt = expand(pre_rt, prm)
         test = zero(i)
     """)

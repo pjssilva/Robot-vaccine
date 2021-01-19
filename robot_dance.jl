@@ -64,6 +64,12 @@ struct SEIR_Parameters
     Mt::SparseMatrixCSC{Float64,Int64}
     sars_over_cov::Float64
     sick_tested::Float64
+    vstates::Int64
+    v_atten::Vector{Float64}
+    effect_window::Vector{Int64}
+    doses_min_window::Vector{Int64}
+    doses_max_window::Vector{Int64}
+    max_doses::Float64
 
     """
         SEIR_Parameters(tinc, tinf, rep, ndays, s1, e1, i1, r1, alternate,
@@ -89,8 +95,14 @@ struct SEIR_Parameters
 
         # For now sars_over_cov and sick_tested are hard coded
         sars_over_cov, sick_tested = 4.0, 0.4
+        v_atten = [1.0, 0.2, 0.1]
+        vstates = length(v_atten)
+        effect_window = [14, 14]
+        doses_min_window, doses_max_window = [28], [28*5]
+        max_doses = 0.005
         new(tinc, tinf, rep, ndays, ls1, s1, e1, i1, r1, alternate, availICU, time_icu,
-            rho_icu_ts, window, out, M, Mt, sars_over_cov, sick_tested)
+            rho_icu_ts, window, out, M, Mt, sars_over_cov, sick_tested, 
+            vstates, v_atten, effect_window, doses_min_window, doses_max_window, max_doses)
     end
 
     """
@@ -203,20 +215,24 @@ function seir_model_with_free_initial_values(prm, verbosity=0, tau=3, test_effic
     if verbosity >= 1
         println("Adding variables to the model...")
     end
-    @variable(m, 0.0 <= s[1:prm.ndays] <= 1.0)
-    @variable(m, 0.0 <= e[1:prm.ndays] <= 1.0)
-    @variable(m, 0.0 <= i[1:prm.ndays] <= 1.0)
-    @variable(m, 0.0 <= r[1:prm.ndays] <= 1.0)
+    @variable(m, 0.0 <= s[1:prm.vstates, 1:prm.ndays] <= 1.0)
+    @variable(m, 0.0 <= e[1:prm.vstates, 1:prm.ndays] <= 1.0)
+    @variable(m, 0.0 <= i[1:prm.vstates, 1:prm.ndays] <= 1.0)
+    @variable(m, 0.0 <= r[1:prm.vstates, 1:prm.ndays] <= 1.0)
+    @variable(m, 0.0 <= ei[1:prm.vstates - 1, 1:prm.ndays] <= 1.0)
+    @variable(m, 0.0 <= ir[1:prm.vstates - 1, 1:prm.ndays] <= 1.0)
 
-    # Control variable
+    # Control variables
     @variable(m, 0.0 <= rt[1:prm.window:prm.ndays] <= prm.rep)
-    
+    @variable(m, 0.0 <= v[1:prm.vstates - 1, 1:prm.ndays] <= 1.0)
+
     # Extra variables to better separate linear and nonlinear expressions and
     # to decouple and "sparsify" the matrices.
     # Obs. I tried many variations, only adding the variable below worded the best.
     #      I tried to get rid of all SEIR variables and use only the initial conditions.
     #      Add variables for sp, ep, ip, rp. Add a variable to represent s times i.
     @variable(m, rti[t=1:prm.ndays])
+    @variable(m, vs[1:prm.vstates - 1, t=1:prm.ndays])
     if verbosity >= 1
         println("Adding variables to the model... Ok!")
     end
@@ -226,8 +242,14 @@ function seir_model_with_free_initial_values(prm, verbosity=0, tau=3, test_effic
         println("Defining additional expressions...")
     end
 
+    @expression(m, total_i[t=1:prm.ndays],
+        sum(i[d, t] for d=1:prm.vstates) + sum(ir[d, t] for d=1:prm.vstates - 1)
+    )
     @constraint(m, [t=1:prm.ndays],
-        rti[t] == rt[mapind(t, prm)]*i[t]
+        rti[t] == rt[mapind(t, prm)]*total_i[t]
+    )
+    @constraint(m, [d=1:prm.vstates - 1, t=1:prm.ndays],
+        vs[d, t] == v[d, t]*s[d, t]
     )
     
     # Compute the gradients at time t of the SEIR model.
@@ -237,18 +259,79 @@ function seir_model_with_free_initial_values(prm, verbosity=0, tau=3, test_effic
     if verbosity >= 1
         println("Defining SEIR equations...")
     end
-    @expression(m, ds[t=1:prm.ndays],
-        -1.0/prm.tinf*s[t]*rti[t]
-    )
-    @expression(m, de[c=1:prm.ncities, t=1:prm.ndays],
-        -ds[t] - (1.0/prm.tinc)*e[t]
-    )
-    @expression(m, di[t=1:prm.ndays],
-        (1.0/prm.tinc)*e[t] - (1.0/prm.tinf)*i[t]
-    )
-    @expression(m, dr[t=1:prm.ndays],
-       (1.0/prm.tinf)*i[t]
-    )
+
+    ds = Matrix{GenericQuadExpr{Float64,VariableRef}}(undef, prm.vstates, prm.ndays)
+    for d=1:prm.vstates, t=1:prm.ndays
+        if d == 1
+            ds[d, t] = @expression(m, 
+                -prm.v_atten[d]*rti[t]*(s[d, t] - vs[d, t])/prm.tinf - vs[d, t]
+            )
+        elseif 1 < d && d < prm.vstates
+            ds[d, t] = @expression(m, 
+                -prm.v_atten[d]*rti[t]*(s[d, t] - vs[d, t])/prm.tinf - vs[d, t] 
+                + vs[d - 1, t]
+            )
+        else
+            ds[d, t] = @expression(m, 
+                -prm.v_atten[d]*rti[t]*s[d, t]/prm.tinf + vs[d - 1, t]
+            )
+        end
+    end
+    de = Matrix{GenericQuadExpr{Float64,VariableRef}}(undef, prm.vstates, prm.ndays)
+    for d=1:prm.vstates, t=1:prm.ndays
+        if d < prm.vstates
+            de[d, t] = @expression(m, 
+                prm.v_atten[d]*rti[t]*(s[d, t] - vs[d, t])/prm.tinf 
+                - (1.0  - v[d, t])/prm.tinc*e[d, t] - v[d, t]*e[d, t]
+            )
+        else
+            de[d, t] = @expression(m, 
+                prm.v_atten[d]*rti[t]*s[d, t]/prm.tinf - e[d, t]/prm.tinc
+            )
+        end
+    end
+    di = Matrix{GenericQuadExpr{Float64,VariableRef}}(undef, prm.vstates, prm.ndays)
+    for d=1:prm.vstates, t=1:prm.ndays
+        if d == 1
+            di[d, t] = @expression(m, 
+                (1.0  - v[d, t])/prm.tinc*e[d, t] 
+                - (1.0 - v[d, t])/prm.tinf*i[d, t] - v[d, t]*i[d, t]
+            )
+        elseif 1 < d && d < prm.vstates
+            di[d, t] = @expression(m, 
+                (1.0  - v[d, t])/prm.tinc*e[d, t] + 2/prm.tinc*ei[d - 1, t]
+                - (1.0 - v[d, t])/prm.tinf*i[d, t] - v[d, t]*i[d, t]
+            )
+        else
+            di[d, t] = @expression(m, 
+                e[d, t]/prm.tinc + 2/prm.tinc*ei[d - 1, t] - i[d, t]/prm.tinf
+            )
+        end
+    end
+    dr = Matrix{GenericQuadExpr{Float64,VariableRef}}(undef, prm.vstates, prm.ndays)
+    for d=1:prm.vstates, t=1:prm.ndays
+        if d == 1
+            dr[d, t] = @expression(m,
+                (1 - v[d, t])/prm.tinf*i[d, t] - v[d, t]*r[d, t]
+            )
+        elseif 1 < d && d < prm.vstates
+            dr[d, t] = @expression(m,
+                (1 - v[d, t])/prm.tinf*i[d, t] + 2/prm.tinf*ir[d - 1, t] 
+                + v[d - 1, t]*r[d - 1, t] - v[d, t]*r[d, t]
+            )
+        else
+            dr[d, t] = @expression(m,
+                i[d, t]/prm.tinf + 2/prm.tinf*ir[d - 1, t] + v[d - 1, t]*r[d - 1, t]
+            )
+        end
+    end
+    dei = Matrix{GenericQuadExpr{Float64,VariableRef}}(undef, prm.vstates - 1, prm.ndays)
+    dir = Matrix{GenericQuadExpr{Float64,VariableRef}}(undef, prm.vstates - 1, prm.ndays)
+    for d=1:prm.vstates - 1, t=1:prm.ndays
+        dei[d, t] = @expression(m, v[d, t]*e[d, t] - 2/prm.tinc*ei[d, t])
+        dir[d, t] = @expression(m, v[d, t]*i[d, t] - 2/prm.tinf*ir[d, t])
+    end
+    
     if verbosity >= 1
         println("Defining SEIR equations... Ok!")
     end
@@ -269,17 +352,23 @@ function seir_model_with_free_initial_values(prm, verbosity=0, tau=3, test_effic
             end
         end
 
-        @constraint(m, [t=2:prm.ndays],
-            s[t] == s[t - 1] + (k_prev_t*ds[t - 1] + k_curr_t*ds[t])*dt
+        @constraint(m, [d=1:prm.vstates, t=2:prm.ndays],
+            s[d, t] == s[d, t - 1] + (k_prev_t*ds[d, t - 1] + k_curr_t*ds[d, t])*dt
         )
-        @constraint(m, [t=2:prm.ndays],
-            e[t] == e[t - 1] + (k_prev_t*de[t - 1] + k_curr_t*de[t])*dt
+        @constraint(m, [d=1:prm.vstates, t=2:prm.ndays],
+            e[d, t] == e[d, t - 1] + (k_prev_t*de[d, t - 1] + k_curr_t*de[d, t])*dt
         )
-        @constraint(m, [t=2:prm.ndays],
-            i[t] == i[t - 1] + (k_prev_t*di[t - 1] + k_curr_t*di[t])*dt
+        @constraint(m, [d=1:prm.vstates, t=2:prm.ndays],
+            i[d, t] == i[d, t - 1] + (k_prev_t*di[d, t - 1] + k_curr_t*di[d, t])*dt
         )
-        @constraint(m, [t=2:prm.ndays],
-            r[t] == r[t - 1] + (k_prev_t*dr[t - 1] + k_curr_t*dr[t])*dt
+        @constraint(m, [d=1:prm.vstates, t=2:prm.ndays],
+            r[d, t] == r[d, t - 1] + (k_prev_t*dr[d, t - 1] + k_curr_t*dr[d, t])*dt
+        )
+        @constraint(m, [d=1:prm.vstates - 1, t=2:prm.ndays],
+            ei[d, t] == ei[d, t - 1] + (k_prev_t*dei[d, t - 1] + k_curr_t*dei[d, t])*dt
+        )
+        @constraint(m, [d=1:prm.vstates - 1, t=2:prm.ndays],
+            ir[d, t] == ir[d, t - 1] + (k_prev_t*dir[d, t - 1] + k_curr_t*dir[d, t])*dt
         )
         if verbosity >= 1
             println("Discretizing SEIR equations... Ok!")
@@ -301,11 +390,20 @@ function seir_model(prm, verbosity, tau=3, test_efficacy=0.8)
     m = seir_model_with_free_initial_values(prm, verbosity, tau, test_efficacy)
 
     # Initial state
-    s1, e1, i1, r1 = m[:s][1], m[:e][1], m[:i][1], m[:r][1]
-        fix(s1, prm.s1[1]; force=true)
-        fix(e1, prm.e1[1]; force=true)
-        fix(i1, prm.i1[1]; force=true)
-        fix(r1, prm.r1[1]; force=true)
+    s1, e1, i1, r1 = m[:s][:, 1], m[:e][:, 1], m[:i][:, 1], m[:r][:, 1]
+    ei1, ir1 = m[:ei][:, 1], m[:ir][:, 1]
+    fix(s1[1], prm.s1[1]; force=true)
+    fix(e1[1], prm.e1[1]; force=true)
+    fix(i1[1], prm.i1[1]; force=true)
+    fix(r1[1], prm.r1[1]; force=true)
+    for d = 2:prm.vstates
+        fix(s1[d], 0.0; force=true)
+        fix(e1[d], 0.0; force=true)
+        fix(i1[d], 0.0; force=true)
+        fix(r1[d], 0.0; force=true)
+        fix(ei1[d - 1], 0.0; force=true)
+        fix(ir1[d - 1], 0.0; force=true)
+    end
     return m
 end
 
@@ -347,35 +445,48 @@ function fit_initial(tinc, tinf, rep, time_icu, data, ttv_weight=0.25)
     m = seir_model_with_free_initial_values(prm)
 
     # Initial state
-    s1, e1, i, r1, rt = m[:s][1], m[:e][1], m[:i], m[:r][1], m[:rt]
-    set_start_value(r1, prm.r1[1])
-    set_start_value(s1, prm.s1[1])
-    set_start_value(e1, prm.e1[1])
-    set_start_value(i[1], prm.i1[1])
+    s1, e1, i, r1, rt = m[:s][:, 1], m[:e][:, 1], m[:i], m[:r][:, 1], m[:rt]
+    ei1, ir1 = m[:ei][:, 1], m[:ir][:, 1]
+    fix(s1[1], prm.s1[1]; force=true)
+    fix(e1[1], prm.e1[1]; force=true)
+    fix(i[1, 1], prm.i1[1]; force=true)
+    fix(r1[1], prm.r1[1]; force=true)
+    for d = 2:prm.vstates
+        fix(s1[d], 0.0; force=true)
+        fix(e1[d], 0.0; force=true)
+        fix(i[d, 1], 0.0; force=true)
+        fix(r1[d], 0.0; force=true)
+        fix(ei1[d - 1], 0.0; force=true)
+        fix(ir1[d - 1], 0.0; force=true)
+    end
+    v = m[:v]
+    for d=1:prm.vstates - 1, t=1:prm.ndays
+        fix(v[d, t] , 0.0; force=true)
+    end
 
     # Define upper bounds on rt
     for t = 1:prm.window:prm.ndays
         set_upper_bound(rt[t], 10*prm.rep)
     end
 
-    # USed to compute the total rt variation
+    # Used to compute the total rt variation
     @variable(m, ttv[2:prm.ndays])
     @constraint(m, con_ttv[i=2:prm.ndays], ttv[i] >= rt[i - 1] - rt[i])
     @constraint(m, con_ttv2[i=2:prm.ndays], ttv[i] >= rt[i] - rt[i - 1])
 
     # SEIR contraint
-    @constraint(m, s1 + e1 + i[1] + r1 == 1.0)
+    @constraint(m, s1[1] + e1[1] + i[1, 1] + r1[1] == 1.0)
 
     # Define objective function
     # Compute a scaling factor so as a least square objective makes more sense
     valid = (t for t = 1:prm.ndays if data[t] > 0)
-    @NLobjective(m, Min, sum((i[t]/data[t] - 1.0)^2 for t in valid) + ttv_weight*sum(ttv[t] for t = 2:prm.ndays))
+    @NLobjective(m, Min, sum((i[1, t]/data[t] - 1.0)^2 for t in valid) + ttv_weight*sum(ttv[t] for t = 2:prm.ndays))
 
     # Optimize
     optimize!(m)
 
-    return value(m[:s][prm.ndays]), value(m[:e][prm.ndays]), 
-        value(m[:i][prm.ndays]), value(m[:r][prm.ndays]), value.(rt[:])
+    return value(m[:s][1, prm.ndays]), value(m[:e][1, prm.ndays]), 
+        value(m[:i][1, prm.ndays]), value(m[:r][1, prm.ndays]), value.(rt[:])
 end
 
 
@@ -443,6 +554,7 @@ function window_control_multcities(prm, population, target, force_difference,
     n_pools = length(pools)
     first_pool_day = [minimum(firstday[pool]) for pool in pools]    
     pool_population = [sum(population[pool]) for pool in pools]
+    s, e, r, v, ir = m[:s], m[:e], m[:r], m[:v], m[:ir]
     @variable(m, V[p=1:n_pools, d=first_pool_day[p]:prm.ndays - prm.time_icu] >= 0)
     for p in 1:n_pools
         pool = pools[p]
@@ -453,16 +565,22 @@ function window_control_multcities(prm, population, target, force_difference,
 
         # As in the paper, V represents the number of people that will leave
         # infected and potentially go to ICU.
-        @constraint(m, [d=first_pool_day[p]:prm.ndays - prm.time_icu],
-            V[p, d] == prm.time_icu/prm.tinf*sum(population[c]*i[d] for c in pool) / pool_population[p]
+        # I simplified this assuming that there is a single region (and it is)
+        # Whole pool. 
+        # TODO: Fix this to take into account the different i states.
+        @constraint(m, [t=first_pool_day[p]:prm.ndays - prm.time_icu],
+            V[p, t] == prm.time_icu/prm.tinf*(
+                sum((1.0 - v[d, t])*i[d, t] for d=1:prm.vstates - 1) + i[prm.vstates, t]
+                + sum(2.0*ir[d, t] for d=1:prm.vstates - 1)
+            )
         )
 
-        for d in 1:prm.ndays - prm.time_icu
+        for t in 1:prm.ndays - prm.time_icu
             Eicu, safety_level = iterate(ρ_icu)
-            if d >= first_pool_day[p]
+            if t >= first_pool_day[p]
                 @constraint(m,
-                    (Eicu + safety_level)*V[p, d] <= 
-                    sum(target[c, d]*population[c]*prm.availICU[c] for c in pool) / pool_population[p]
+                    (Eicu + safety_level)*V[p, t] <= 
+                    sum(target[c, t]*population[c]*prm.availICU[c] for c in pool) / pool_population[p]
                 )
             end
         end
@@ -470,6 +588,63 @@ function window_control_multcities(prm, population, target, force_difference,
 
     if verbosity >= 1
         println("Setting limits for number of infected... Ok!")
+    end
+
+    if verbosity >= 1
+        println("Setting constraints to define vaccines")
+    end
+    # There are no transitions before efect window
+    for d=1:prm.vstates - 1
+        for t = 1:prm.effect_window[d]
+            fix(v[d, t], 0.0; force=true)
+        end
+    end
+
+    # Define the number of doses applied each day
+    applied = Matrix{GenericQuadExpr{Float64,VariableRef}}(undef, prm.vstates - 1, prm.ndays)
+    for d=1:prm.vstates - 1
+        for t=1:(prm.ndays - prm.effect_window[d])
+            effect = t + prm.effect_window[d]
+            applied[d, t] = @expression(m, 
+                v[d, effect]*(s[d, effect] + e[d, effect] + i[d, effect] + r[d, effect])
+            )
+        end
+        for t=prm.ndays - prm.effect_window[d] + 1:prm.ndays
+            applied[d, t] = @expression(m, 0.0*v[d, prm.ndays])
+        end
+    end
+
+    # Apply the doses in order
+    @variable(m, 0 <= cumv[1:prm.vstates - 1, 1:prm.ndays])
+    @constraint(m, [d=1:prm.vstates - 1], 
+        cumv[d, 1] == applied[d, 1]
+    )
+    @constraint(m, [d=1:prm.vstates - 1, t=2:prm.ndays],
+        cumv[d, t] == cumv[d, t - 1] + applied[d, t]
+    )
+    for d=2:prm.vstates - 1, t = 1:prm.ndays
+        if t > prm.doses_min_window[d - 1]
+            @constraint(m,
+                cumv[d, t] <= cumv[d - 1, t - prm.doses_min_window[d - 1]]
+            )
+        else
+            fix(cumv[d, t], 0.0; force=true)
+        end
+        if t > prm.doses_max_window[d - 1]
+            @constraint(m,
+                cumv[d, t] >= cumv[d - 1, t - prm.doses_max_window[d - 1]]
+            )
+        end
+    end
+
+    # Respect the maximum ammount of vaccine doses
+    for t = 1:prm.ndays
+        @constraint(m,
+            sum(applied[d, t] for d=1:prm.vstates - 1) <= prm.max_doses
+        )
+    end
+    if verbosity >= 1
+        println("Setting constraints to define vaccines... Ok!")
     end
 
     # Compute the weights for the objectives terms
@@ -486,27 +661,11 @@ function window_control_multcities(prm, population, target, force_difference,
     @objective(m, Min,
         # Try to keep as many people working as possible
         prm.window*sum(effect_pop[c]/mean_population*(prm.rep - rt[d])
-            for c = 1:prm.ncities for d = hammer_duration[c]+1:prm.window:prm.ndays) -
-        # Induce bang-bang
-        0.02*prm.alternate*prm.window*sum(
-            force_difference[c, d]*effect_pop[c]/mean_population*
-            (prm.rep - rt[d])*(min_rt - rt[d])
-            for c = 1:prm.ncities for d = hammer_duration[c]+1:prm.window:prm.ndays) -
-        # Try to alternate within a single city.
-        0.5*prm.alternate*prm.window/(prm.rep^2)*sum(
-            force_difference[c, d]*(rt[d] - rt[d - prm.window])^2 
-            for c = 1:prm.ncities 
-            for d = hammer_duration[c] + prm.window + 1:prm.window:prm.ndays
-        ) -
-        # Try to enforce different cities to alternate the controls
-        0.5*prm.alternate*prm.window/(prm.rep^2)*sum(
-            minimum((effect_pop[c], effect_pop[cl]))*
-            minimum((dif_matrix[c, d], dif_matrix[cl, d]))*
-            (rt[d] - rt[d])^2
-            for c = 1:prm.ncities 
-            for cl = c + 1:prm.ncities 
-            for d = hammer_duration[c] + 1:prm.window:prm.ndays
-        )
+            for c = 1:prm.ncities for d = hammer_duration[c]+1:prm.window:prm.ndays)
+        # Maximize S
+        #-sum(s[d, prm.ndays] for d =1:prm.vstates)
+        # Paga para aplicar vacinas
+        #+ sum(applied)
     )
     if verbosity >= 1
         println("Computing objective function... Ok!")
