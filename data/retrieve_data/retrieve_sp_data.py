@@ -131,7 +131,7 @@ mobility_matrix = mobility_matrix.div(pop_drs, axis=1)
 sp.reset_index(inplace=True)
 sp = sp.loc[: ,["nome_munic", "datahora", "casos", "pop", "icu_capacity"]]
 sp["state"] = "SP"
-sp.columns = ["city", "date", "confirmed", "estimated_population_2019", "icu_capaciy", "state"]
+sp.columns = ["city", "date", "confirmed", "estimated_population_2019", "icu_capacity", "state"]
 sp.to_csv("../covid_with_cities.csv")
 
 for d in pop_drs.index:
