@@ -8,16 +8,9 @@ import numpy as np
 import numpy.linalg as la
 import os.path as path
 
-# To use PyJulia
-print('Loading PyJulia module...')
-from julia.api import Julia
-jl = Julia(compiled_modules=False)
-from julia import Main as Julia
-print('Loading PyJulia module... Ok!')
-print('Loading Robot-dance Julia module...')
-Julia.eval('include("robot_dance.jl")')
-print('Loading Robot-dance Julia module... Ok!')
-
+import import_julia
+import_julia.import_julia_and_robot_dance()
+from julia import Main as Julia     # So we can call Julia variables using Julia.*
 
 def save_basic_parameters(tinc=5.2, tinf=2.9, rep=2.5, ndays=400, time_icu=7, 
     alternate=1.0, window=14, min_level=1.0):
