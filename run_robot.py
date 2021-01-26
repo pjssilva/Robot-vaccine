@@ -816,7 +816,41 @@ def plot_result(basic_prm, result, figure_file, hammer_duration, start_date=None
         labels = [i.strftime('%m/%Y') for i in ticks]
         ax.set_xticklabels(labels, rotation=45, ha='right')
 
+def plot_var_julia(var, basic_prm, result, figure_file, hammer_duration, start_date=None, subset=None, plot_cumsum=False):
+    # Get data
+    if subset is None:
+        cities = result.index.get_level_values(0).unique()
+    else:
+        cities = subset
+    ncities = len(cities)
     
+    fig = plt.figure(figsize=(15, 1*ncities), constrained_layout=False)
+
+    var_julia = get_jump_variable(var)
+    ndays = len(var_julia[0]) - 1
+
+
+    if plot_cumsum == False:
+        plt.plot(var_julia[0])
+    else:
+        plt.plot(np.cumsum(var_julia[0]))
+    ax = plt.gca()
+    
+    if start_date is not None:
+        start_date = pd.Timestamp(start_date)
+
+    if start_date is None:
+        ax.set_xticks(np.arange(0, ndays, 30))
+    else:
+        ticks = pd.date_range(start_date, start_date + ndays*pd.to_timedelta("1D"), freq="2W")
+        ticks = list(ticks)
+        if ticks[0] <= start_date + pd.to_timedelta("10D"):
+            ticks[0] = start_date
+        else:
+            ticks = [start_date] + ticks
+        ax.set_xticks([(i - start_date).days for i in ticks])
+        labels = [i.strftime('%d/%m/%Y') for i in ticks]
+        ax.set_xticklabels(labels, rotation=45, ha='right')    
 
 def main():
     """Allow call from the command line.
@@ -825,7 +859,7 @@ def main():
                   # 2: even more detailed
     dir_output = "results"
     options = get_options()
-    basic_prm, cities_data, mob_matrix, target, hammer_data = read_data(options)
+    basic_prm, cities_data, mob_matrix, target, hammer_data = read_data(options, verbosity=verbosity)
     ncities, ndays = len(cities_data.index), int(basic_prm["ndays"])
     force_dif = np.ones((ncities, ndays))
     find_feasible_hammer(basic_prm, cities_data, mob_matrix, target, hammer_data, 
