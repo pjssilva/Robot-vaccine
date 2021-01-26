@@ -22,6 +22,11 @@ print('Loading modules... Ok!')
 
 import prepare_data
 
+import import_julia
+import_julia.import_julia_and_robot_dance()
+from julia import Main as Julia     # So we can call Julia variables using Julia.*
+
+
 class SimpleTimeSeries:
     """Simple time series of one or two steps.
     """
@@ -80,17 +85,6 @@ class SimpleTimeSeries:
             n_OK += (simulation <= upper_bound).sum()
 
         return n_OK, n_samples
-
-
-# To use PyJulia
-print('Loading Julia library...')
-from julia.api import Julia
-jl = Julia(compiled_modules=False)
-from julia import Main as Julia
-print('Loading Julia library... Ok!')
-print('Loading Robot-dance Julia module...')
-Julia.eval('include("robot_dance.jl")')
-print('Loading Robot-dance Julia module... Ok!')
 
 
 def get_options():
