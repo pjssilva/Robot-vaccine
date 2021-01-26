@@ -128,7 +128,7 @@ def read_data(options, verbosity=0):
         cities_data = pd.read_csv(options.cities_data, index_col=0)
     else:
         cities_data = prepare_data.compute_initial_condition_evolve_and_save(
-            basic_prm, None, [], 0, 1, options.pre_cities_data)
+            basic_prm, None, [], 0, 1, options.pre_cities_data, verbosity)
 
     if path.exists(options.target):
         target = pd.read_csv(options.target, index_col=0)
@@ -526,14 +526,22 @@ def _robot_dance_hammer(t,y,tinc,tinf,ncities,M,out,min_rt,hammer_level,hammer_d
     dy = _robot_dance_only_eqs(s,e,i,r,rt,tinc,tinf,ncities,M,out)
     return dy
 
+def get_jump_variable(var_name):
+    """Get a variable from JuMP. Returns a numpy array
+    """
+    return Julia.eval(f"{var_name} = reshape(value.(m[:{var_name}][1, :]), (1, :));")
+
 
 def save_result(basic_prm, cities_data, target, filename):
     """Save the result of a run for further processing.
     """
     cities_names = cities_data.index
     n_cities = len(cities_names)
-    Julia.eval("s = reshape(value.(m[:s][1, :]), (1, :)); e = reshape(value.(m[:e][1, :]), (1, :))")
-    Julia.eval("i = reshape(value.(m[:i][1, :]), (1, :)); r = reshape(value.(m[:r][1, :]), (1, :))")
+    var_s = get_jump_variable('s')
+    var_e = get_jump_variable('e')
+    var_i = get_jump_variable('i')
+    var_r = get_jump_variable('r')
+    var_v = get_jump_variable('v')
     Julia.eval("rt = expand(value.(m[:rt]), prm)")
     n = len(Julia.s[0, :])
     #Julia.eval("test = value.(m[:test])")
@@ -542,10 +550,11 @@ def save_result(basic_prm, cities_data, target, filename):
 
     for i in range(n_cities):
         c = cities_names[i]
-        df.append([c, "s"] + list(Julia.s[i, :])) 
-        df.append([c, "e"] + list(Julia.e[i, :])) 
-        df.append([c, "i"] + list(Julia.i[i, :])) 
-        df.append([c, "r"] + list(Julia.r[i, :])) 
+        df.append([c, "s"] + list(var_s[i, :])) 
+        df.append([c, "e"] + list(var_e[i, :])) 
+        df.append([c, "i"] + list(var_i[i, :])) 
+        df.append([c, "r"] + list(var_r[i, :])) 
+        df.append([c, "v"] + list(var_v[i, :])) 
         df.append([c, "rt"] + list(Julia.rt[i, :])) 
         df.append([c, "rel. test"] + list(Julia.test[i, :]))
         df.append([c, "test"] + list(Julia.test[i, :]*cities_data.loc[c, "population"]))
@@ -661,7 +670,7 @@ def optimize_and_show_results(basic_prm, figure_file, data_file, cities_data, ta
         print('Saving output files... Ok!')
 
     if verbosity >= 1:
-        print("Ploting result...")
+        print("Plotting result...")
 
     name, extension = os.path.splitext(figure_file)
 
@@ -673,8 +682,24 @@ def optimize_and_show_results(basic_prm, figure_file, data_file, cities_data, ta
     plot_result(basic_prm, result, figure_file, Julia.hammer_duration, cities_data["start_date"][0], type="test")
     plt.savefig(figure_file, dpi=150, bbox_inches='tight')
 
+    figure_file =  name + "-vaccines" + extension
+    plot_var_julia('v', basic_prm, result, figure_file, Julia.hammer_duration, cities_data["start_date"][0])
+    plt.savefig(figure_file, dpi=150, bbox_inches='tight')
+
+    figure_file =  name + "-vaccines_cumsum" + extension
+    plot_var_julia('v', basic_prm, result, figure_file, Julia.hammer_duration, cities_data["start_date"][0], plot_cumsum=True)
+    plt.savefig(figure_file, dpi=150, bbox_inches='tight')
+
+    figure_file =  name + "-applied" + extension
+    plot_var_julia('v', basic_prm, result, figure_file, Julia.hammer_duration, cities_data["start_date"][0])
+    plt.savefig(figure_file, dpi=150, bbox_inches='tight')
+
+    figure_file =  name + "-cumv" + extension
+    plot_var_julia('cumv', basic_prm, result, figure_file, Julia.hammer_duration, cities_data["start_date"][0])
+    plt.savefig(figure_file, dpi=150, bbox_inches='tight')
+
     if verbosity >= 1:
-        print("Ploting result... OK!")
+        print("Plotting result... OK!")
 
     return stats
 
