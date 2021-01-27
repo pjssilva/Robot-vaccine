@@ -29,6 +29,10 @@ sub_rmsp = {
     "Mun. São Paulo": ["São Paulo"]
 }
 
+# If you already have current data files and don't want to download them again, change download_files to False
+# (the whole data is about 50 MB)
+download_files = True
+
 # A date that I know is in the data (so I can select a single date to get information that
 # does not change in time, like populuation)
 valid_date = pd.to_datetime("2020-03-01")
@@ -41,7 +45,8 @@ mobility_cities = "names_new.csv"
 
 # Retrieve number of ICU units per DRS
 head, tail = path.split(icu_url)
-request.urlretrieve(icu_url, filename=tail)
+if download_files == True:
+    request.urlretrieve(icu_url, filename=tail)
 
 pre_icu = pd.read_csv(tail, sep=";", parse_dates=[0], decimal=",")
 last_date = pre_icu["datahora"].max()
@@ -70,7 +75,8 @@ for d in map_names.keys():
 
 # Download epidemy data
 heat, tail = path.split(data_url)
-request.urlretrieve(data_url, filename=tail)
+if download_files == True:
+    request.urlretrieve(data_url, filename=tail)
 
 # Read data for processing
 sp = pd.read_csv(tail, sep=";", parse_dates=[4])
@@ -92,6 +98,9 @@ drs = sp.groupby(["nome_drs", "datahora"]).sum()[["casos", "casos_novos", "obito
 drs["icu_capacity"] = 1.0
 for c in drs.index.unique():
     drs.loc[c, "icu_capacity"] = icu[c[0]]
+
+# Group data for the entire state
+entire_sp = sp.groupby("datahora").sum()[["casos", "casos_novos", "obitos", "obitos_novos"]]
 
 state_inf = sp[sp["datahora"] == valid_date]
 sp_cities = pd.Series(state_inf.index)
@@ -142,4 +151,13 @@ drs["state"] = "SP"
 drs.columns = ["city", "date", "confirmed", "estimated_population_2019", "icu_capacity", "state"]
 drs.to_csv("../covid_with_drs.csv")
 mobility_matrix.to_csv("../drs_mobility.csv")
+
+entire_sp.reset_index(inplace=True)
+entire_sp["nome_estado"] = "SP"
+entire_sp["pop"] = state_inf["pop"].sum()
+entire_sp["icu_capacity"] = pre_icu["total_covid_uti_mm7d"].sum()/pre_icu["pop"].sum()
+entire_sp = entire_sp.loc[:, ["nome_estado", "datahora", "casos", "pop", "icu_capacity"]]
+entire_sp["state"] = "SP"
+entire_sp.columns = ["city", "date", "confirmed", "estimated_population_2019", "icu_capacity", "state"]
+entire_sp.to_csv("../covid_with_state.csv")
 
