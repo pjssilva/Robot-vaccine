@@ -62,23 +62,27 @@ struct SEIR_Parameters
     out::Vector{Float64}
     M::SparseMatrixCSC{Float64,Int64}
     Mt::SparseMatrixCSC{Float64,Int64}
-    sars_over_cov::Float64
-    sick_tested::Float64
     vstates::Int64
-    v_atten::Vector{Float64}
+    r_atten::Vector{Float64}
+    # TODO: Should this be population dependent?
+    icu_atten::Vector{Float64}
     effect_window::Vector{Int64}
     doses_min_window::Vector{Int64}
     doses_max_window::Vector{Int64}
     max_doses::Float64
+    npops::Int64                         # Number of subpopulations
+    subpop::Vector{Float64}              # Size of each subpopulation in (0, 1), sum = 1
+    r0pop::Vector{Float64}               # Factor to adjust R0 for each subpopulation
+    contact::Matrix{Float64}             # Contact matrix
 
     """
         SEIR_Parameters(tinc, tinf, rep, ndays, s1, e1, i1, r1, alternate,
         availICU, rho_icu_ts, window, out, M, Mt)
 
-    SEIR parameters with mobility information (out, M, Mt).
+    SEIR parameters with mobility information (out, M, Mt) and multiple populations.
     """
     function SEIR_Parameters(tinc, tinf, rep, ndays, s1, e1, i1, r1, alternate, availICU, 
-        time_icu, rho_icu_ts, window, out, M, Mt)
+        time_icu, rho_icu_ts, window, out, M, Mt, subpop, r0pop, contact)
         ls1 = length(s1)
         @assert length(e1) == ls1
         @assert length(i1) == ls1
@@ -93,16 +97,43 @@ struct SEIR_Parameters
         @assert size(Mt) == (ls1, ls1)
         @assert all(Mt .>= 0.0)
 
-        # For now sars_over_cov and sick_tested are hard coded
-        sars_over_cov, sick_tested = 4.0, 0.4
-        v_atten = [1.0, 0.2, 0.1]
-        vstates = length(v_atten)
+        # Check subpopulation information
+        @assert isapprox(sum(subpop), 1.0)
+        @assert length(subpop) == length(r0pop)
+        npops = length(subpop)
+        @assert size(contact) == (npops, npops)
+        @assert isapprox(sum(contact, dims=2), ones(npops))
+
+        # For now vaccine action is hard coded
+        r_atten = [1.0, 1.0, 1.0]
+        icu_atten = [1.0, 0.5, 0.3]
+        vstates = length(r_atten)
         effect_window = [14, 14]
         doses_min_window, doses_max_window = [28], [28*5]
         max_doses = 0.005
+
         new(tinc, tinf, rep, ndays, ls1, s1, e1, i1, r1, alternate, availICU, time_icu,
-            rho_icu_ts, window, out, M, Mt, sars_over_cov, sick_tested, 
-            vstates, v_atten, effect_window, doses_min_window, doses_max_window, max_doses)
+            rho_icu_ts, window, out, M, Mt,
+            vstates, r_atten, icu_atten, effect_window, doses_min_window, doses_max_window, max_doses,
+            npops, subpop, r0pop, contact)
+    end
+
+    """
+        SEIR_Parameters(tinc, tinf, rep, ndays, s1, e1, i1, r1, alternate,
+        availICU, rho_icu_ts, window, out, M, Mt)
+
+    SEIR parameters with mobility information (out, M, Mt).
+    """
+    function SEIR_Parameters(tinc, tinf, rep, ndays, s1, e1, i1, r1, alternate, availICU, 
+        time_icu, rho_icu_ts, window, out, M, Mt)
+
+        # Default subpopulation distribution is hard coded for now.
+        subpop = [0.2, 0.8] #[0.3, 0.3, 0.4]
+        r0pop = [1.5, 1.0] #[1.0, 1.0, 1.0]
+        contact = [0.8 0.2; 0.01 0.99]
+
+        SEIR_Parameters(tinc, tinf, rep, ndays, s1, e1, i1, r1, alternate, availICU, 
+            time_icu, rho_icu_ts, window, out, M, Mt, subpop, r0pop, contact)
     end
 
     """
@@ -215,24 +246,24 @@ function seir_model_with_free_initial_values(prm, verbosity=0, tau=3, test_effic
     if verbosity >= 1
         println("Adding variables to the model...")
     end
-    @variable(m, 0.0 <= s[1:prm.vstates, 1:prm.ndays] <= 1.0)
-    @variable(m, 0.0 <= e[1:prm.vstates, 1:prm.ndays] <= 1.0)
-    @variable(m, 0.0 <= i[1:prm.vstates, 1:prm.ndays] <= 1.0)
-    @variable(m, 0.0 <= r[1:prm.vstates, 1:prm.ndays] <= 1.0)
-    @variable(m, 0.0 <= ei[1:prm.vstates - 1, 1:prm.ndays] <= 1.0)
-    @variable(m, 0.0 <= ir[1:prm.vstates - 1, 1:prm.ndays] <= 1.0)
+    @variable(m, 0.0 <= s[1:prm.npops, 1:prm.vstates, 1:prm.ndays] <= 1.0)
+    @variable(m, 0.0 <= e[1:prm.npops, 1:prm.vstates, 1:prm.ndays] <= 1.0)
+    @variable(m, 0.0 <= i[1:prm.npops, 1:prm.vstates, 1:prm.ndays] <= 1.0)
+    @variable(m, 0.0 <= r[1:prm.npops, 1:prm.vstates, 1:prm.ndays] <= 1.0)
+    @variable(m, 0.0 <= ei[1:prm.npops, 1:prm.vstates - 1, 1:prm.ndays] <= 1.0)
+    @variable(m, 0.0 <= ir[1:prm.npops, 1:prm.vstates - 1, 1:prm.ndays] <= 1.0)
 
     # Control variables
     @variable(m, 0.0 <= rt[1:prm.window:prm.ndays] <= prm.rep)
-    @variable(m, 0.0 <= v[1:prm.vstates - 1, 1:prm.ndays] <= 1.0)
+    @variable(m, 0.0 <= v[1:prm.npops, 1:prm.vstates - 1, 1:prm.ndays] <= 1.0)
 
     # Extra variables to better separate linear and nonlinear expressions and
     # to decouple and "sparsify" the matrices.
     # Obs. I tried many variations, only adding the variable below worded the best.
     #      I tried to get rid of all SEIR variables and use only the initial conditions.
     #      Add variables for sp, ep, ip, rp. Add a variable to represent s times i.
-    @variable(m, rti[t=1:prm.ndays])
-    @variable(m, vs[1:prm.vstates - 1, t=1:prm.ndays])
+    @variable(m, rti[p=1:prm.npops, t=1:prm.ndays])
+    @variable(m, vs[1:prm.npops, 1:prm.vstates - 1, t=1:prm.ndays])
     if verbosity >= 1
         println("Adding variables to the model... Ok!")
     end
@@ -242,14 +273,18 @@ function seir_model_with_free_initial_values(prm, verbosity=0, tau=3, test_effic
         println("Defining additional expressions...")
     end
 
-    @expression(m, total_i[t=1:prm.ndays],
-        sum(i[d, t] for d=1:prm.vstates) + sum(ir[d, t] for d=1:prm.vstates - 1)
+    # TODO: I think that this is the key place to add the contact matrix
+    @expression(m, pop_i[p=1:prm.npops, t=1:prm.ndays],
+        (sum(i[p, d, t] for d=1:prm.vstates) + sum(ir[p, d, t] for d=1:prm.vstates - 1))/prm.subpop[p]
     )
-    @constraint(m, [t=1:prm.ndays],
-        rti[t] == rt[mapind(t, prm)]*total_i[t]
+    @expression(m, prob_i[p=1:prm.npops, t=1:prm.ndays],
+        sum(prm.contact[p, pl]*pop_i[pl, t] for pl=1:prm.npops)
     )
-    @constraint(m, [d=1:prm.vstates - 1, t=1:prm.ndays],
-        vs[d, t] == v[d, t]*s[d, t]
+    @constraint(m, [p=1:prm.npops, t=1:prm.ndays],
+        rti[p, t] == prm.r0pop[p]*rt[mapind(t, prm)]*prob_i[p, t]
+    )
+    @constraint(m, [p=1:prm.npops, d=1:prm.vstates - 1, t=1:prm.ndays],
+        vs[p, d, t] == v[p, d, t]*s[p, d, t]
     )
     
     # Compute the gradients at time t of the SEIR model.
@@ -260,76 +295,76 @@ function seir_model_with_free_initial_values(prm, verbosity=0, tau=3, test_effic
         println("Defining SEIR equations...")
     end
 
-    ds = Matrix{GenericQuadExpr{Float64,VariableRef}}(undef, prm.vstates, prm.ndays)
-    for d=1:prm.vstates, t=1:prm.ndays
+    ds = Array{GenericQuadExpr{Float64,VariableRef}, 3}(undef, prm.npops, prm.vstates, prm.ndays)
+    for p=1:prm.npops, d=1:prm.vstates, t=1:prm.ndays
         if d == 1
-            ds[d, t] = @expression(m, 
-                -prm.v_atten[d]*rti[t]*(s[d, t] - vs[d, t])/prm.tinf - vs[d, t]
+            ds[p, d, t] = @expression(m, 
+                -prm.r_atten[d]*rti[p, t]*(s[p, d, t] - vs[p, d, t])/prm.tinf - vs[p, d, t]
             )
         elseif 1 < d && d < prm.vstates
-            ds[d, t] = @expression(m, 
-                -prm.v_atten[d]*rti[t]*(s[d, t] - vs[d, t])/prm.tinf - vs[d, t] 
-                + vs[d - 1, t]
+            ds[p, d, t] = @expression(m, 
+                -prm.r_atten[d]*rti[p, t]*(s[p, d, t] - vs[p, d, t])/prm.tinf - vs[p, d, t] 
+                + vs[p, d - 1, t]
             )
         else
-            ds[d, t] = @expression(m, 
-                -prm.v_atten[d]*rti[t]*s[d, t]/prm.tinf + vs[d - 1, t]
+            ds[p, d, t] = @expression(m, 
+                -prm.r_atten[d]*rti[p, t]*s[p, d, t]/prm.tinf + vs[p, d - 1, t]
             )
         end
     end
-    de = Matrix{GenericQuadExpr{Float64,VariableRef}}(undef, prm.vstates, prm.ndays)
-    for d=1:prm.vstates, t=1:prm.ndays
+    de = Array{GenericQuadExpr{Float64,VariableRef}, 3}(undef, prm.npops, prm.vstates, prm.ndays)
+    for p=1:prm.npops, d=1:prm.vstates, t=1:prm.ndays
         if d < prm.vstates
-            de[d, t] = @expression(m, 
-                prm.v_atten[d]*rti[t]*(s[d, t] - vs[d, t])/prm.tinf 
-                - (1.0  - v[d, t])/prm.tinc*e[d, t] - v[d, t]*e[d, t]
+            de[p, d, t] = @expression(m, 
+                prm.r_atten[d]*rti[p, t]*(s[p, d, t] - vs[p, d, t])/prm.tinf 
+                - (1.0  - v[p, d, t])/prm.tinc*e[p, d, t] - v[p, d, t]*e[p, d, t]
             )
         else
-            de[d, t] = @expression(m, 
-                prm.v_atten[d]*rti[t]*s[d, t]/prm.tinf - e[d, t]/prm.tinc
+            de[p, d, t] = @expression(m, 
+                prm.r_atten[d]*rti[p, t]*s[p, d, t]/prm.tinf - e[p, d, t]/prm.tinc
             )
         end
     end
-    di = Matrix{GenericQuadExpr{Float64,VariableRef}}(undef, prm.vstates, prm.ndays)
-    for d=1:prm.vstates, t=1:prm.ndays
+    di = Array{GenericQuadExpr{Float64,VariableRef}, 3}(undef, prm.npops, prm.vstates, prm.ndays)
+    for p=1:prm.npops, d=1:prm.vstates, t=1:prm.ndays
         if d == 1
-            di[d, t] = @expression(m, 
-                (1.0  - v[d, t])/prm.tinc*e[d, t] 
-                - (1.0 - v[d, t])/prm.tinf*i[d, t] - v[d, t]*i[d, t]
+            di[p, d, t] = @expression(m, 
+                (1.0  - v[p, d, t])/prm.tinc*e[p, d, t] 
+                - (1.0 - v[p, d, t])/prm.tinf*i[p, d, t] - v[p, d, t]*i[p, d, t]
             )
         elseif 1 < d && d < prm.vstates
-            di[d, t] = @expression(m, 
-                (1.0  - v[d, t])/prm.tinc*e[d, t] + 2/prm.tinc*ei[d - 1, t]
-                - (1.0 - v[d, t])/prm.tinf*i[d, t] - v[d, t]*i[d, t]
+            di[p, d, t] = @expression(m, 
+                (1.0  - v[p, d, t])/prm.tinc*e[p, d, t] + 2/prm.tinc*ei[p, d - 1, t]
+                - (1.0 - v[p, d, t])/prm.tinf*i[p, d, t] - v[p, d, t]*i[p, d, t]
             )
         else
-            di[d, t] = @expression(m, 
-                e[d, t]/prm.tinc + 2/prm.tinc*ei[d - 1, t] - i[d, t]/prm.tinf
+            di[p, d, t] = @expression(m, 
+                e[p, d, t]/prm.tinc + 2/prm.tinc*ei[p, d - 1, t] - i[p, d, t]/prm.tinf
             )
         end
     end
-    dr = Matrix{GenericQuadExpr{Float64,VariableRef}}(undef, prm.vstates, prm.ndays)
-    for d=1:prm.vstates, t=1:prm.ndays
+    dr = Array{GenericQuadExpr{Float64,VariableRef}, 3}(undef, prm.npops, prm.vstates, prm.ndays)
+    for p=1:prm.npops, d=1:prm.vstates, t=1:prm.ndays
         if d == 1
-            dr[d, t] = @expression(m,
-                (1 - v[d, t])/prm.tinf*i[d, t] - v[d, t]*r[d, t]
+            dr[p, d, t] = @expression(m,
+                (1 - v[p, d, t])/prm.tinf*i[p, d, t] - v[p, d, t]*r[p, d, t]
             )
         elseif 1 < d && d < prm.vstates
-            dr[d, t] = @expression(m,
-                (1 - v[d, t])/prm.tinf*i[d, t] + 2/prm.tinf*ir[d - 1, t] 
-                + v[d - 1, t]*r[d - 1, t] - v[d, t]*r[d, t]
+            dr[p, d, t] = @expression(m,
+                (1 - v[p, d, t])/prm.tinf*i[p, d, t] + 2/prm.tinf*ir[p, d - 1, t] 
+                + v[p, d - 1, t]*r[p, d - 1, t] - v[p, d, t]*r[p, d, t]
             )
         else
-            dr[d, t] = @expression(m,
-                i[d, t]/prm.tinf + 2/prm.tinf*ir[d - 1, t] + v[d - 1, t]*r[d - 1, t]
+            dr[p, d, t] = @expression(m,
+                i[p, d, t]/prm.tinf + 2/prm.tinf*ir[p, d - 1, t] + v[p, d - 1, t]*r[p, d - 1, t]
             )
         end
     end
-    dei = Matrix{GenericQuadExpr{Float64,VariableRef}}(undef, prm.vstates - 1, prm.ndays)
-    dir = Matrix{GenericQuadExpr{Float64,VariableRef}}(undef, prm.vstates - 1, prm.ndays)
-    for d=1:prm.vstates - 1, t=1:prm.ndays
-        dei[d, t] = @expression(m, v[d, t]*e[d, t] - 2/prm.tinc*ei[d, t])
-        dir[d, t] = @expression(m, v[d, t]*i[d, t] - 2/prm.tinf*ir[d, t])
+    dei = Array{GenericQuadExpr{Float64,VariableRef}, 3}(undef, prm.npops, prm.vstates - 1, prm.ndays)
+    dir = Array{GenericQuadExpr{Float64,VariableRef}, 3}(undef, prm.npops, prm.vstates - 1, prm.ndays)
+    for p=1:prm.npops, d=1:prm.vstates - 1, t=1:prm.ndays
+        dei[p, d, t] = @expression(m, v[p, d, t]*e[p, d, t] - 2/prm.tinc*ei[p, d, t])
+        dir[p, d, t] = @expression(m, v[p, d, t]*i[p, d, t] - 2/prm.tinf*ir[p, d, t])
     end
     
     if verbosity >= 1
@@ -352,23 +387,23 @@ function seir_model_with_free_initial_values(prm, verbosity=0, tau=3, test_effic
             end
         end
 
-        @constraint(m, [d=1:prm.vstates, t=2:prm.ndays],
-            s[d, t] == s[d, t - 1] + (k_prev_t*ds[d, t - 1] + k_curr_t*ds[d, t])*dt
+        @constraint(m, [p=1:prm.npops, d=1:prm.vstates, t=2:prm.ndays],
+            s[p, d, t] == s[p, d, t - 1] + (k_prev_t*ds[p, d, t - 1] + k_curr_t*ds[p, d, t])*dt
         )
-        @constraint(m, [d=1:prm.vstates, t=2:prm.ndays],
-            e[d, t] == e[d, t - 1] + (k_prev_t*de[d, t - 1] + k_curr_t*de[d, t])*dt
+        @constraint(m, [p=1:prm.npops, d=1:prm.vstates, t=2:prm.ndays],
+            e[p, d, t] == e[p, d, t - 1] + (k_prev_t*de[p, d, t - 1] + k_curr_t*de[p, d, t])*dt
         )
-        @constraint(m, [d=1:prm.vstates, t=2:prm.ndays],
-            i[d, t] == i[d, t - 1] + (k_prev_t*di[d, t - 1] + k_curr_t*di[d, t])*dt
+        @constraint(m, [p=1:prm.npops, d=1:prm.vstates, t=2:prm.ndays],
+            i[p, d, t] == i[p, d, t - 1] + (k_prev_t*di[p, d, t - 1] + k_curr_t*di[p, d, t])*dt
         )
-        @constraint(m, [d=1:prm.vstates, t=2:prm.ndays],
-            r[d, t] == r[d, t - 1] + (k_prev_t*dr[d, t - 1] + k_curr_t*dr[d, t])*dt
+        @constraint(m, [p=1:prm.npops, d=1:prm.vstates, t=2:prm.ndays],
+            r[p, d, t] == r[p, d, t - 1] + (k_prev_t*dr[p, d, t - 1] + k_curr_t*dr[p, d, t])*dt
         )
-        @constraint(m, [d=1:prm.vstates - 1, t=2:prm.ndays],
-            ei[d, t] == ei[d, t - 1] + (k_prev_t*dei[d, t - 1] + k_curr_t*dei[d, t])*dt
+        @constraint(m, [p=1:prm.npops, d=1:prm.vstates - 1, t=2:prm.ndays],
+            ei[p, d, t] == ei[p, d, t - 1] + (k_prev_t*dei[p, d, t - 1] + k_curr_t*dei[p, d, t])*dt
         )
-        @constraint(m, [d=1:prm.vstates - 1, t=2:prm.ndays],
-            ir[d, t] == ir[d, t - 1] + (k_prev_t*dir[d, t - 1] + k_curr_t*dir[d, t])*dt
+        @constraint(m, [p=1:prm.npops, d=1:prm.vstates - 1, t=2:prm.ndays],
+            ir[p, d, t] == ir[p, d, t - 1] + (k_prev_t*dir[p, d, t - 1] + k_curr_t*dir[p, d, t])*dt
         )
         if verbosity >= 1
             println("Discretizing SEIR equations... Ok!")
@@ -385,24 +420,27 @@ end
     seir_model(prm)
 
 Creates a SEIR model setting the initial parameters for the SEIR variables from prm.
+For now it splits the origina S, E, I, R proportionally to prm.subpop.
 """
 function seir_model(prm, verbosity, tau=3, test_efficacy=0.8)
     m = seir_model_with_free_initial_values(prm, verbosity, tau, test_efficacy)
 
     # Initial state
-    s1, e1, i1, r1 = m[:s][:, 1], m[:e][:, 1], m[:i][:, 1], m[:r][:, 1]
-    ei1, ir1 = m[:ei][:, 1], m[:ir][:, 1]
-    fix(s1[1], prm.s1[1]; force=true)
-    fix(e1[1], prm.e1[1]; force=true)
-    fix(i1[1], prm.i1[1]; force=true)
-    fix(r1[1], prm.r1[1]; force=true)
-    for d = 2:prm.vstates
-        fix(s1[d], 0.0; force=true)
-        fix(e1[d], 0.0; force=true)
-        fix(i1[d], 0.0; force=true)
-        fix(r1[d], 0.0; force=true)
-        fix(ei1[d - 1], 0.0; force=true)
-        fix(ir1[d - 1], 0.0; force=true)
+    s1, e1, i1, r1 = m[:s][:, :, 1], m[:e][:, :, 1], m[:i][:, :, 1], m[:r][:, :, 1]
+    ei1, ir1 = m[:ei][:, :, 1], m[:ir][:, :, 1]
+    for p = 1:prm.npops
+        fix(s1[p, 1], prm.subpop[p]*prm.s1[1]; force=true)
+        fix(e1[p, 1], prm.subpop[p]*prm.e1[1]; force=true)
+        fix(i1[p, 1], prm.subpop[p]*prm.i1[1]; force=true)
+        fix(r1[p, 1], prm.subpop[p]*prm.r1[1]; force=true)
+    end
+    for p=1:prm.npops, d = 2:prm.vstates
+        fix(s1[p, d], 0.0; force=true)
+        fix(e1[p, d], 0.0; force=true)
+        fix(i1[p, d], 0.0; force=true)
+        fix(r1[p, d], 0.0; force=true)
+        fix(ei1[p, d - 1], 0.0; force=true)
+        fix(ir1[p, d - 1], 0.0; force=true)
     end
     return m
 end
@@ -440,28 +478,28 @@ mean time.
 function fit_initial(tinc, tinf, rep, time_icu, data, ttv_weight=0.25)
     # Create SEIR model
     prm = SEIR_Parameters(tinc, tinf, rep, length(data), [1.0], [0.0], [0.0], [0.0], 
-        0.0, [0.0], time_icu, zeros(1, 10), 1, [0.0], zeros(1, 1), zeros(1, 1))
+        0.0, [0.0], time_icu, zeros(1, 10), 1, [0.0], zeros(1, 1), zeros(1, 1), [1.0], [1.0], ones(1,1))
 
     m = seir_model_with_free_initial_values(prm)
 
     # Initial state
-    s1, e1, i, r1, rt = m[:s][:, 1], m[:e][:, 1], m[:i], m[:r][:, 1], m[:rt]
-    ei1, ir1 = m[:ei][:, 1], m[:ir][:, 1]
-    fix(s1[1], prm.s1[1]; force=true)
-    fix(e1[1], prm.e1[1]; force=true)
-    fix(i[1, 1], prm.i1[1]; force=true)
-    fix(r1[1], prm.r1[1]; force=true)
+    s1, e1, i, r1, rt = m[:s][:, :, 1], m[:e][:, :, 1], m[:i], m[:r][:, :, 1], m[:rt]
+    ei1, ir1 = m[:ei][:, :, 1], m[:ir][:, :, 1]
+    fix(s1[1, 1], prm.s1[1]; force=true)
+    fix(e1[1, 1], prm.e1[1]; force=true)
+    fix(i[1, 1, 1], prm.i1[1]; force=true)
+    fix(r1[1, 1], prm.r1[1]; force=true)
     for d = 2:prm.vstates
-        fix(s1[d], 0.0; force=true)
-        fix(e1[d], 0.0; force=true)
-        fix(i[d, 1], 0.0; force=true)
-        fix(r1[d], 0.0; force=true)
-        fix(ei1[d - 1], 0.0; force=true)
-        fix(ir1[d - 1], 0.0; force=true)
+        fix(s1[1, d], 0.0; force=true)
+        fix(e1[1, d], 0.0; force=true)
+        fix(i[1, d, 1], 0.0; force=true)
+        fix(r1[1, d], 0.0; force=true)
+        fix(ei1[1, d - 1], 0.0; force=true)
+        fix(ir1[1, d - 1], 0.0; force=true)
     end
     v = m[:v]
     for d=1:prm.vstates - 1, t=1:prm.ndays
-        fix(v[d, t] , 0.0; force=true)
+        fix(v[1, d, t] , 0.0; force=true)
     end
 
     # Define upper bounds on rt
@@ -475,18 +513,18 @@ function fit_initial(tinc, tinf, rep, time_icu, data, ttv_weight=0.25)
     @constraint(m, con_ttv2[i=2:prm.ndays], ttv[i] >= rt[i] - rt[i - 1])
 
     # SEIR contraint
-    @constraint(m, s1[1] + e1[1] + i[1, 1] + r1[1] == 1.0)
+    @constraint(m, s1[1, 1] + e1[1, 1] + i[1, 1, 1] + r1[1, 1] == 1.0)
 
     # Define objective function
     # Compute a scaling factor so as a least square objective makes more sense
     valid = (t for t = 1:prm.ndays if data[t] > 0)
-    @NLobjective(m, Min, sum((i[1, t]/data[t] - 1.0)^2 for t in valid) + ttv_weight*sum(ttv[t] for t = 2:prm.ndays))
+    @NLobjective(m, Min, sum((i[1, 1, t]/data[t] - 1.0)^2 for t in valid) + ttv_weight*sum(ttv[t] for t = 2:prm.ndays))
 
     # Optimize
     optimize!(m)
 
-    return value(m[:s][1, prm.ndays]), value(m[:e][1, prm.ndays]), 
-        value(m[:i][1, prm.ndays]), value(m[:r][1, prm.ndays]), value.(rt[:])
+    return value(m[:s][1, 1, prm.ndays]), value(m[:e][1, 1, prm.ndays]), 
+        value(m[:i][1, 1, prm.ndays]), value(m[:r][1, 1, prm.ndays]), value.(rt[:])
 end
 
 
@@ -555,9 +593,9 @@ function window_control_multcities(prm, population, target, force_difference,
     first_pool_day = [minimum(firstday[pool]) for pool in pools]    
     pool_population = [sum(population[pool]) for pool in pools]
     s, e, r, v, ir = m[:s], m[:e], m[:r], m[:v], m[:ir]
-    @variable(m, V[p=1:n_pools, d=first_pool_day[p]:prm.ndays - prm.time_icu] >= 0)
-    for p in 1:n_pools
-        pool = pools[p]
+    @variable(m, V[pool_id=1:n_pools, d=first_pool_day[pool_id]:prm.ndays - prm.time_icu] >= 0)
+    for pool_id in 1:n_pools
+        pool = pools[pool_id]
         # Uses the time series that gives the ratio of IC needed from the first
         # city in the pool.
         ρ_icu = times_series[pool[1]]
@@ -567,20 +605,20 @@ function window_control_multcities(prm, population, target, force_difference,
         # infected and potentially go to ICU.
         # I simplified this assuming that there is a single region (and it is)
         # Whole pool. 
-        # TODO: Fix this to take into account the different i states.
-        @constraint(m, [t=first_pool_day[p]:prm.ndays - prm.time_icu],
-            V[p, t] == prm.time_icu/prm.tinf*(
-                sum((1.0 - v[d, t])*i[d, t] for d=1:prm.vstates - 1) + i[prm.vstates, t]
-                + sum(2.0*ir[d, t] for d=1:prm.vstates - 1)
+        @constraint(m, [t=first_pool_day[pool_id]:prm.ndays - prm.time_icu],
+            V[pool_id, t] == prm.time_icu/prm.tinf*(
+                sum(prm.icu_atten[d]*(1.0 - v[p, d, t])*i[p, d, t] for p=1:prm.npops, d=1:prm.vstates - 1) 
+                + sum(prm.icu_atten[prm.vstates]*i[p, prm.vstates, t] for p=1:prm.npops)
+                + sum(2.0*prm.icu_atten[d]*ir[p, d, t] for p=1:prm.npops, d=1:prm.vstates - 1)
             )
         )
 
         for t in 1:prm.ndays - prm.time_icu
             Eicu, safety_level = iterate(ρ_icu)
-            if t >= first_pool_day[p]
+            if t >= first_pool_day[pool_id]
                 @constraint(m,
-                    (Eicu + safety_level)*V[p, t] <= 
-                    sum(target[c, t]*population[c]*prm.availICU[c] for c in pool) / pool_population[p]
+                    (Eicu + safety_level)*V[pool_id, t] <= 
+                    sum(target[c, t]*population[c]*prm.availICU[c] for c in pool) / pool_population[pool_id]
                 )
             end
         end
@@ -593,10 +631,10 @@ function window_control_multcities(prm, population, target, force_difference,
     if verbosity >= 1
         println("Setting constraints to define vaccines")
     end
-    # There are no transitions before efect window
-    for d=1:prm.vstates - 1
+    # There are no transitions before effect window
+    for p=1:prm.npops, d=1:prm.vstates - 1
         for t = 1:prm.effect_window[d]
-            fix(v[d, t], 0.0; force=true)
+            fix(v[p, d, t], 0.0; force=true)
         end
     end
 
@@ -605,12 +643,14 @@ function window_control_multcities(prm, population, target, force_difference,
     for d=1:prm.vstates - 1
         for t=1:(prm.ndays - prm.effect_window[d])
             effect = t + prm.effect_window[d]
-            applied[d, t] = @expression(m, 
-                v[d, effect]*(s[d, effect] + e[d, effect] + i[d, effect] + r[d, effect])
+            applied[d, t] = @expression(m,
+                sum(v[p, d, effect]*(s[p, d, effect] + e[p, d, effect] + i[p, d, effect] + r[p, d, effect])
+                    for p=1:prm.npops
+                )
             )
         end
         for t=prm.ndays - prm.effect_window[d] + 1:prm.ndays
-            applied[d, t] = @expression(m, 0.0*v[d, prm.ndays])
+            applied[d, t] = @expression(m, 0.0*v[1, d, prm.ndays])
         end
     end
 
