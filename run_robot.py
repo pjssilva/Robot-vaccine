@@ -529,7 +529,7 @@ def _robot_dance_hammer(t,y,tinc,tinf,ncities,M,out,min_rt,hammer_level,hammer_d
 def get_jump_variable(var_name):
     """Get a variable from JuMP. Returns a numpy array
     """
-    return Julia.eval(f"{var_name} = reshape(value.(m[:{var_name}][1, :]), (1, :));")
+    return Julia.eval(f"{var_name} = value.(m[:{var_name}])")
 
 
 def save_result(basic_prm, cities_data, target, filename):
@@ -537,45 +537,49 @@ def save_result(basic_prm, cities_data, target, filename):
     """
     cities_names = cities_data.index
     n_cities = len(cities_names)
+
     var_s = get_jump_variable('s')
     var_e = get_jump_variable('e')
     var_i = get_jump_variable('i')
     var_r = get_jump_variable('r')
+    var_ei = get_jump_variable('ei')
+    var_ir = get_jump_variable('ei')
     var_v = get_jump_variable('v')
-    Julia.eval("rt = expand(value.(m[:rt]), prm)")
-    n = len(Julia.s[0, :])
-    #Julia.eval("test = value.(m[:test])")
-    Julia.eval("test = zero(s)")
+    Julia.eval("rt = reshape(expand(value.(m[:rt]), prm), (:,))")
+    n = len(Julia.s[0, 0, :])
     df = []
 
-    for i in range(n_cities):
-        c = cities_names[i]
-        df.append([c, "s"] + list(var_s[i, :])) 
-        df.append([c, "e"] + list(var_e[i, :])) 
-        df.append([c, "i"] + list(var_i[i, :])) 
-        df.append([c, "r"] + list(var_r[i, :])) 
-        df.append([c, "v"] + list(var_v[i, :])) 
-        df.append([c, "rt"] + list(Julia.rt[i, :])) 
-        df.append([c, "rel. test"] + list(Julia.test[i, :]))
-        df.append([c, "test"] + list(Julia.test[i, :]*cities_data.loc[c, "population"]))
+    for p in range(var_s.shape[0]):
+        for d in [0, 1, 2]:
+            df.append(["s", p, d] + list(var_s[p, d, :])) 
+            df.append(["e", p, d] + list(var_e[p, d, :])) 
+            df.append(["i", p, d] + list(var_i[p, d, :])) 
+            df.append(["r", p, d] + list(var_r[p, d, :])) 
+        for d in [0, 1]:
+            df.append(["ei", p, d] + list(var_ei[p, d, :])) 
+            df.append(["ir", p, d] + list(var_ir[p, d, :])) 
+            df.append(["v", p, d] + list(var_v[p, d, :])) 
 
-        # Information on ICU
-        icu_capacity = cities_data.loc[c, "population"]*cities_data.loc[c, "icu_capacity"]
-        df.append([c, "icu_capacity"] + list(icu_capacity*np.ones(n)))
-        icu_target = icu_capacity * target.loc[c, :]
-        df.append([c, "target_icu"] + list(icu_target))
-        rho_icu = SimpleTimeSeries(*cities_data.iloc[i, 7:-2])
-        confidence = cities_data.loc[c, "confidence"]
-        mean_icu, upper_icu = rho_icu.get_upper_bound(n, confidence)
-        df.append([c, "mean_rho_icu"] + list(mean_icu))
-        df.append([c, "upper_rho_icu"] + list(upper_icu))
-        mean_icu = cities_data.loc[c, "time_icu"] / basic_prm["tinf"] * mean_icu * cities_data.loc[c, "population"] * Julia.i[i, :]
-        df.append([c, "mean_used_icu"] + list(mean_icu))
-        upper_icu = cities_data.loc[c, "time_icu"] / basic_prm["tinf"] * upper_icu * cities_data.loc[c, "population"] * Julia.i[i, :]
-        df.append([c, "upper_used_icu"] + list(upper_icu))
+    df.append(["rt", -1, -1] + list(Julia.rt)) 
 
-    df = pd.DataFrame(df, columns=["City", "Variable"] + list(range(len(Julia.s[0,:]))))
-    df.set_index(["City", "Variable"], inplace=True)
+    # Information on ICU
+    c = cities_names[0]
+    icu_capacity = cities_data.loc[c, "population"]*cities_data.loc[c, "icu_capacity"]
+    df.append(["icu_capacity", -1, -1] + list(icu_capacity*np.ones(n)))
+    icu_target = icu_capacity * target.loc[c, :]
+    df.append(["target_icu", -1, -1] + list(icu_target))
+    rho_icu = SimpleTimeSeries(*cities_data.iloc[0, 7:-2])
+    confidence = cities_data.loc[c, "confidence"]
+    mean_icu, upper_icu = rho_icu.get_upper_bound(n, confidence)
+    df.append(["mean_rho_icu", -1, -1] + list(mean_icu))
+    df.append(["upper_rho_icu", -1, -1] + list(upper_icu))
+    # mean_icu = cities_data.loc[c, "time_icu"] / basic_prm["tinf"] * mean_icu * cities_data.loc[c, "population"] * Julia.i[i, :]
+    # df.append(["mean_used_icu", -1] + list(mean_icu))
+    # upper_icu = cities_data.loc[c, "time_icu"] / basic_prm["tinf"] * upper_icu * cities_data.loc[c, "population"] * Julia.i[i, :]
+    # df.append(["upper_used_icu"] + list(upper_icu))
+
+    df = pd.DataFrame(df, columns=["Variable", "Subpopulation", "Dose"] + list(range(len(Julia.s[0, 0, :]))))
+    df.set_index(["Variable", "Subpopulation", "Dose"], inplace=True)
     df.to_csv(filename)
     return df
 
@@ -592,16 +596,13 @@ def optimize_and_show_results(basic_prm, figure_file, data_file, cities_data, ta
 
     Julia.eval("""
         optimize!(m)
-        i = reshape(value.(m[:i][1, :]), (1, :))
+        i = reshape(sum(value.(m[:i]), dims=(1,2)) .+ sum(value.(m[:ir]), dims=(1, 2)), (:, ))
         pre_rt = value.(m[:rt])
         rt = expand(pre_rt, prm)
-        test = zero(i)
     """)
 
     if verbosity >= 1:
         print('Solving Robot-dance... Ok!')
-        print("Total tests used ", end="")
-        print((Julia.test.T*population).sum())
 
     bins = [0]
     bins.extend(plt.linspace(1.0, 0.95*basic_prm["rep"], 5))
@@ -609,44 +610,40 @@ def optimize_and_show_results(basic_prm, figure_file, data_file, cities_data, ta
 
     stats = pd.DataFrame(index=large_cities)
     changes_rt = []
-    for (i, c) in enumerate(large_cities):
-        changes_rt.append(len(np.diff(Julia.rt[i]).nonzero()[0]) + 1)
+    changes_rt.append(len(np.diff(Julia.rt).nonzero()[0]) + 1)
     stats["Rt changes"] = changes_rt
 
     i_avg, max_i = [], []
-    for (i, c) in enumerate(large_cities):
-        maximum = 100*Julia.i[i, Julia.hammer_duration[i]:].max()
-        average = 100*sum(Julia.i[i])/len(Julia.i[i])
-        max_i.append(f"{maximum:.3f}%")
-        i_avg.append(f"{average:.3f}%")
+    maximum = 100*Julia.i[Julia.hammer_duration[0]:].max()
+    average = 100*sum(Julia.i)/len(Julia.i)
+    max_i.append(f"{maximum:.3f}%")
+    i_avg.append(f"{average:.3f}%")
     stats["Avg. I"] = i_avg
     stats["Max I"] = max_i
         
     total, mean = [], []
-    for (i,c) in enumerate(large_cities):
-        rt = Julia.rt[i]
-        inds = np.nonzero(rt >= bins[-2])[0]
-        count_open_total = len(inds)
-        thresh_open = np.nonzero(np.diff(inds) > 1)[0] + 1
-        thresh_open = np.insert(thresh_open, 0, 0)
-        thresh_open = np.append(thresh_open, len(inds))
-        count_open = np.diff(thresh_open)
-        total.append(count_open_total)
-        mean.append(np.mean(count_open))
+    rt = Julia.rt
+    inds = np.nonzero(rt >= bins[-2])[0]
+    count_open_total = len(inds)
+    thresh_open = np.nonzero(np.diff(inds) > 1)[0] + 1
+    thresh_open = np.insert(thresh_open, 0, 0)
+    thresh_open = np.append(thresh_open, len(inds))
+    count_open = np.diff(thresh_open)
+    total.append(count_open_total)
+    mean.append(np.mean(count_open))
     stats["Open"] = total
     stats["Mean open"] = mean
 
     total, mean = [], []
-    for (i,c) in enumerate(large_cities):
-        rt = Julia.rt[i]
-        inds = np.nonzero(rt < bins[2])[0]
-        count_open_total = len(inds)
-        thresh_open = np.nonzero(np.diff(inds) > 1)[0] + 1
-        thresh_open = np.insert(thresh_open, 0, 0)
-        thresh_open = np.append(thresh_open, len(inds))
-        count_open = np.diff(thresh_open)
-        total.append(count_open_total)
-        mean.append(np.mean(count_open))
+    rt = Julia.rt
+    inds = np.nonzero(rt < bins[2])[0]
+    count_open_total = len(inds)
+    thresh_open = np.nonzero(np.diff(inds) > 1)[0] + 1
+    thresh_open = np.insert(thresh_open, 0, 0)
+    thresh_open = np.append(thresh_open, len(inds))
+    count_open = np.diff(thresh_open)
+    total.append(count_open_total)
+    mean.append(np.mean(count_open))
     stats["Closed"] = total
     stats["Mean closed"] = mean
 
@@ -669,6 +666,7 @@ def optimize_and_show_results(basic_prm, figure_file, data_file, cities_data, ta
     if verbosity >= 1:
         print('Saving output files... Ok!')
 
+    return stats
     if verbosity >= 1:
         print("Plotting result...")
 

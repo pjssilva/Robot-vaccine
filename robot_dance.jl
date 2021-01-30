@@ -73,6 +73,7 @@ struct SEIR_Parameters
     npops::Int64                         # Number of subpopulations
     subpop::Vector{Float64}              # Size of each subpopulation in (0, 1), sum = 1
     r0pop::Vector{Float64}               # Factor to adjust R0 for each subpopulation
+    icupop::Vector{Float64}              # Factor to adjust the need for ICU of each subpopulation
     contact::Matrix{Float64}             # Contact matrix
 
     """
@@ -82,7 +83,7 @@ struct SEIR_Parameters
     SEIR parameters with mobility information (out, M, Mt) and multiple populations.
     """
     function SEIR_Parameters(tinc, tinf, rep, ndays, s1, e1, i1, r1, alternate, availICU, 
-        time_icu, rho_icu_ts, window, out, M, Mt, subpop, r0pop, contact)
+        time_icu, rho_icu_ts, window, out, M, Mt, subpop, r0pop, icupop, contact)
         ls1 = length(s1)
         @assert length(e1) == ls1
         @assert length(i1) == ls1
@@ -99,23 +100,24 @@ struct SEIR_Parameters
 
         # Check subpopulation information
         @assert isapprox(sum(subpop), 1.0)
-        @assert length(subpop) == length(r0pop)
         npops = length(subpop)
+        @assert length(r0pop) == npops
+        @assert length(icupop) == npops
         @assert size(contact) == (npops, npops)
         @assert isapprox(sum(contact, dims=2), ones(npops))
 
         # For now vaccine action is hard coded
-        r_atten = [1.0, 1.0, 1.0]
-        icu_atten = [1.0, 0.5, 0.3]
+        r_atten = [1.0, 0.5, 0.3]
+        icu_atten = [1.0, 1.0, 1.0]
         vstates = length(r_atten)
         effect_window = [14, 14]
-        doses_min_window, doses_max_window = [28], [28*5]
+        doses_min_window, doses_max_window = [28], [28] #[28*5]
         max_doses = 0.005
 
         new(tinc, tinf, rep, ndays, ls1, s1, e1, i1, r1, alternate, availICU, time_icu,
             rho_icu_ts, window, out, M, Mt,
             vstates, r_atten, icu_atten, effect_window, doses_min_window, doses_max_window, max_doses,
-            npops, subpop, r0pop, contact)
+            npops, subpop, r0pop, icupop, contact)
     end
 
     """
@@ -128,12 +130,13 @@ struct SEIR_Parameters
         time_icu, rho_icu_ts, window, out, M, Mt)
 
         # Default subpopulation distribution is hard coded for now.
-        subpop = [0.2, 0.8] #[0.3, 0.3, 0.4]
-        r0pop = [1.5, 1.0] #[1.0, 1.0, 1.0]
-        contact = [0.8 0.2; 0.01 0.99]
+        subpop = [0.2, 0.8]
+        r0pop = [1.5, 1.0]
+        icupop = [0.1, 1.0]
+        contact = [0.8 0.2; 0.7 0.3]
 
         SEIR_Parameters(tinc, tinf, rep, ndays, s1, e1, i1, r1, alternate, availICU, 
-            time_icu, rho_icu_ts, window, out, M, Mt, subpop, r0pop, contact)
+            time_icu, rho_icu_ts, window, out, M, Mt, subpop, r0pop, icupop, contact)
     end
 
     """
@@ -478,7 +481,7 @@ mean time.
 function fit_initial(tinc, tinf, rep, time_icu, data, ttv_weight=0.25)
     # Create SEIR model
     prm = SEIR_Parameters(tinc, tinf, rep, length(data), [1.0], [0.0], [0.0], [0.0], 
-        0.0, [0.0], time_icu, zeros(1, 10), 1, [0.0], zeros(1, 1), zeros(1, 1), [1.0], [1.0], ones(1,1))
+        0.0, [0.0], time_icu, zeros(1, 10), 1, [0.0], zeros(1, 1), zeros(1, 1), [1.0], [1.0], [1.0], ones(1,1))
 
     m = seir_model_with_free_initial_values(prm)
 
@@ -593,7 +596,7 @@ function window_control_multcities(prm, population, target, force_difference,
     first_pool_day = [minimum(firstday[pool]) for pool in pools]    
     pool_population = [sum(population[pool]) for pool in pools]
     s, e, r, v, ir = m[:s], m[:e], m[:r], m[:v], m[:ir]
-    @variable(m, V[pool_id=1:n_pools, d=first_pool_day[pool_id]:prm.ndays - prm.time_icu] >= 0)
+    @variable(m, V[pool_id=1:n_pools, p=1:prm.npops, d=first_pool_day[pool_id]:prm.ndays - prm.time_icu] >= 0)
     for pool_id in 1:n_pools
         pool = pools[pool_id]
         # Uses the time series that gives the ratio of IC needed from the first
@@ -604,9 +607,9 @@ function window_control_multcities(prm, population, target, force_difference,
         # As in the paper, V represents the number of people that will leave
         # infected and potentially go to ICU.
         # I simplified this assuming that there is a single region (and it is)
-        # Whole pool. 
-        @constraint(m, [t=first_pool_day[pool_id]:prm.ndays - prm.time_icu],
-            V[pool_id, t] == prm.time_icu/prm.tinf*(
+        # Whole pool.
+        @constraint(m, [p=1:prm.npops, t=first_pool_day[pool_id]:prm.ndays - prm.time_icu],
+            V[pool_id, p, t] == prm.time_icu/prm.tinf*(
                 sum(prm.icu_atten[d]*(1.0 - v[p, d, t])*i[p, d, t] for p=1:prm.npops, d=1:prm.vstates - 1) 
                 + sum(prm.icu_atten[prm.vstates]*i[p, prm.vstates, t] for p=1:prm.npops)
                 + sum(2.0*prm.icu_atten[d]*ir[p, d, t] for p=1:prm.npops, d=1:prm.vstates - 1)
@@ -617,7 +620,7 @@ function window_control_multcities(prm, population, target, force_difference,
             Eicu, safety_level = iterate(ρ_icu)
             if t >= first_pool_day[pool_id]
                 @constraint(m,
-                    (Eicu + safety_level)*V[pool_id, t] <= 
+                    sum((Eicu + safety_level)*prm.icupop[p]*V[pool_id, p, t] for p=1:prm.npops) <= 
                     sum(target[c, t]*population[c]*prm.availICU[c] for c in pool) / pool_population[pool_id]
                 )
             end
@@ -705,7 +708,7 @@ function window_control_multcities(prm, population, target, force_difference,
         # Maximize S
         #-sum(s[d, prm.ndays] for d =1:prm.vstates)
         # Paga para aplicar vacinas
-        #+ sum(applied)
+        # + sum(applied)
     )
     if verbosity >= 1
         println("Computing objective function... Ok!")
