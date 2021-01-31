@@ -111,7 +111,7 @@ struct SEIR_Parameters
         icu_atten = [1.0, 1.0, 1.0]
         vstates = length(r_atten)
         effect_window = [14, 14]
-        doses_min_window, doses_max_window = [28], [28] #[28*5]
+        doses_min_window, doses_max_window = [28], [28*3] #[28*5]
         max_doses = 0.005
 
         new(tinc, tinf, rep, ndays, ls1, s1, e1, i1, r1, alternate, availICU, time_icu,
@@ -130,10 +130,10 @@ struct SEIR_Parameters
         time_icu, rho_icu_ts, window, out, M, Mt)
 
         # Default subpopulation distribution is hard coded for now.
-        subpop = [0.2, 0.8]
-        r0pop = [1.5, 1.0]
-        icupop = [0.1, 1.0]
-        contact = [0.8 0.2; 0.7 0.3]
+        subpop = [0.5, 0.5]
+        r0pop = [1.0, 1.0]
+        icupop = [1.0, 1.0]
+        contact = [0.3 0.7; 0.3 0.7]
 
         SEIR_Parameters(tinc, tinf, rep, ndays, s1, e1, i1, r1, alternate, availICU, 
             time_icu, rho_icu_ts, window, out, M, Mt, subpop, r0pop, icupop, contact)
@@ -610,9 +610,9 @@ function window_control_multcities(prm, population, target, force_difference,
         # Whole pool.
         @constraint(m, [p=1:prm.npops, t=first_pool_day[pool_id]:prm.ndays - prm.time_icu],
             V[pool_id, p, t] == prm.time_icu/prm.tinf*(
-                sum(prm.icu_atten[d]*(1.0 - v[p, d, t])*i[p, d, t] for p=1:prm.npops, d=1:prm.vstates - 1) 
-                + sum(prm.icu_atten[prm.vstates]*i[p, prm.vstates, t] for p=1:prm.npops)
-                + sum(2.0*prm.icu_atten[d]*ir[p, d, t] for p=1:prm.npops, d=1:prm.vstates - 1)
+                sum(prm.icu_atten[d]*(1.0 - v[p, d, t])*i[p, d, t] for d=1:prm.vstates - 1) 
+                + prm.icu_atten[prm.vstates]*i[p, prm.vstates, t] 
+                + sum(2.0*prm.icu_atten[d]*ir[p, d, t] for d=1:prm.vstates - 1)
             )
         )
 
