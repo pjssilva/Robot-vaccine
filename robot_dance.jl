@@ -69,7 +69,7 @@ struct SEIR_Parameters
     effect_window::Vector{Int64}
     doses_min_window::Vector{Int64}
     doses_max_window::Vector{Int64}
-    max_doses::Float64
+    max_doses::Vector{Float64}
     npops::Int64                         # Number of subpopulations
     subpop::Vector{Float64}              # Size of each subpopulation in (0, 1), sum = 1
     r0pop::Vector{Float64}               # Factor to adjust R0 for each subpopulation
@@ -111,9 +111,11 @@ struct SEIR_Parameters
         icu_atten = [1.0, 1.0, 1.0]
         vstates = length(r_atten)
         effect_window = [14, 14]
-        doses_min_window, doses_max_window = [28], [28*3] #[28*5]
-        max_doses = 0.005
-
+        doses_min_window, doses_max_window = [28], [90]
+        max_doses = 0.015*ones(ndays)
+        max_doses[1:30] .= 0.001
+        max_doses[31:150] .= 0.005
+        
         new(tinc, tinf, rep, ndays, ls1, s1, e1, i1, r1, alternate, availICU, time_icu,
             rho_icu_ts, window, out, M, Mt,
             vstates, r_atten, icu_atten, effect_window, doses_min_window, doses_max_window, max_doses,
@@ -130,10 +132,15 @@ struct SEIR_Parameters
         time_icu, rho_icu_ts, window, out, M, Mt)
 
         # Default subpopulation distribution is hard coded for now.
-        subpop = [0.5, 0.5]
-        r0pop = [1.0, 1.0]
-        icupop = [1.0, 1.0]
-        contact = [0.3 0.7; 0.3 0.7]
+        subpop = [0.30, 0.48, 0.14, 0.08]
+        r0pop = [1.0, 1.3, 1.0, 1.0]
+        icupop = [0.06, 0.58, 2.06, 5.16]
+        contact = [
+            0.57 0.27 0.10 0.06;
+            0.20 0.59 0.15 0.06;
+            0.15 0.46 0.27 0.12;
+            0.18 0.24 0.18 0.40
+        ]
 
         SEIR_Parameters(tinc, tinf, rep, ndays, s1, e1, i1, r1, alternate, availICU, 
             time_icu, rho_icu_ts, window, out, M, Mt, subpop, r0pop, icupop, contact)
@@ -642,49 +649,53 @@ function window_control_multcities(prm, population, target, force_difference,
     end
 
     # Define the number of doses applied each day
-    applied = Matrix{GenericQuadExpr{Float64,VariableRef}}(undef, prm.vstates - 1, prm.ndays)
-    for d=1:prm.vstates - 1
-        for t=1:(prm.ndays - prm.effect_window[d])
-            effect = t + prm.effect_window[d]
-            applied[d, t] = @expression(m,
-                sum(v[p, d, effect]*(s[p, d, effect] + e[p, d, effect] + i[p, d, effect] + r[p, d, effect])
-                    for p=1:prm.npops
+    if sum(prm.max_doses) == 0
+        for p=1:prm.npops, d=1:prm.vstates - 1, t=1:prm.ndays
+            fix(v[p, d, t], 0; force=true)
+        end
+    else
+        applied = Array{GenericQuadExpr{Float64,VariableRef}, 3}(undef, prm.npops, prm.vstates - 1, prm.ndays)
+        for p=1:prm.npops, d=1:prm.vstates - 1
+            for t=1:(prm.ndays - prm.effect_window[d])
+                effect = t + prm.effect_window[d]
+                applied[p, d, t] = @expression(m,
+                    v[p, d, effect]*(s[p, d, effect] + e[p, d, effect] + i[p, d, effect] + r[p, d, effect])
                 )
-            )
+            end
+            for t=prm.ndays - prm.effect_window[d] + 1:prm.ndays
+                applied[p, d, t] = @expression(m, 0.0*v[p, d, prm.ndays])
+            end
         end
-        for t=prm.ndays - prm.effect_window[d] + 1:prm.ndays
-            applied[d, t] = @expression(m, 0.0*v[1, d, prm.ndays])
-        end
-    end
 
-    # Apply the doses in order
-    @variable(m, 0 <= cumv[1:prm.vstates - 1, 1:prm.ndays])
-    @constraint(m, [d=1:prm.vstates - 1], 
-        cumv[d, 1] == applied[d, 1]
-    )
-    @constraint(m, [d=1:prm.vstates - 1, t=2:prm.ndays],
-        cumv[d, t] == cumv[d, t - 1] + applied[d, t]
-    )
-    for d=2:prm.vstates - 1, t = 1:prm.ndays
-        if t > prm.doses_min_window[d - 1]
-            @constraint(m,
-                cumv[d, t] <= cumv[d - 1, t - prm.doses_min_window[d - 1]]
-            )
-        else
-            fix(cumv[d, t], 0.0; force=true)
-        end
-        if t > prm.doses_max_window[d - 1]
-            @constraint(m,
-                cumv[d, t] >= cumv[d - 1, t - prm.doses_max_window[d - 1]]
-            )
-        end
-    end
-
-    # Respect the maximum ammount of vaccine doses
-    for t = 1:prm.ndays
-        @constraint(m,
-            sum(applied[d, t] for d=1:prm.vstates - 1) <= prm.max_doses
+        # Apply the doses in order
+        @variable(m, 0 <= cumv[p=1:prm.npops, 1:prm.vstates - 1, 1:prm.ndays])
+        @constraint(m, [p=1:prm.npops, d=1:prm.vstates - 1], 
+            cumv[p, d, 1] == applied[p, d, 1]
         )
+        @constraint(m, [p=1:prm.npops, d=1:prm.vstates - 1, t=2:prm.ndays],
+            cumv[p, d, t] == cumv[p, d, t - 1] + applied[p, d, t]
+        )
+        for p=1:prm.npops, d=2:prm.vstates - 1, t = 1:prm.ndays
+            if t > prm.doses_min_window[d - 1]
+                @constraint(m,
+                    cumv[p, d, t] <= cumv[p, d - 1, t - prm.doses_min_window[d - 1]]
+                )
+            else
+                fix(cumv[p, d, t], 0.0; force=true)
+            end
+            if t > prm.doses_max_window[d - 1]
+                @constraint(m,
+                    cumv[p, d, t] >= cumv[p, d - 1, t - prm.doses_max_window[d - 1]]
+                )
+            end
+        end
+
+        # Respect the maximum ammount of vaccine doses
+        for t = 1:prm.ndays
+            @constraint(m,
+                sum(applied[p, d, t] for p=1:prm.npops for d=1:prm.vstates - 1) <= prm.max_doses[t]
+            )
+        end
     end
     if verbosity >= 1
         println("Setting constraints to define vaccines... Ok!")
