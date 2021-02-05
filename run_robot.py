@@ -168,7 +168,7 @@ def read_data(options, verbosity=0):
 
 
 def prepare_optimization(basic_prm, cities_data, mob_matrix, target, hammer_data, 
-    force_dif, r_atten,  icu_atten, max_doses, verbosity=0):
+    force_dif, r0factor, r_atten,  icu_atten, max_doses, verbosity=0):
     ncities, ndays = len(cities_data.index), int(basic_prm["ndays"])
     if force_dif is 1:
         force_dif = np.ones((ncities, ndays))
@@ -204,13 +204,14 @@ def prepare_optimization(basic_prm, cities_data, mob_matrix, target, hammer_data
     Julia.hammer_level = hammer_data["level"].values
     Julia.verbosity = verbosity
     Julia.window = basic_prm["window"]
+    Julia.r0factor = r0factor
     Julia.r_atten = r_atten
     Julia.icu_atten = icu_atten
     Julia.max_doses = max_doses
     Julia.eval("""
         prm = SEIR_Parameters(tinc, tinf, rep, ndays, s1, e1, i1, r1, alternate,
             availICU, time_icu, rho_icu_ts, window, out, sparse(M), sparse(Mt), 
-            r_atten, icu_atten, max_doses)
+            r0factor, r_atten, icu_atten, max_doses)
         m = window_control_multcities(prm, population, target, force_dif, hammer_duration, 
             hammer_level, min_level, verbosity);
     """)
@@ -650,7 +651,7 @@ def optimize_and_show_results(basic_prm, figure_file, data_file, cities_data, ta
 
     # Before saving anything, check if directory exists
     # Lets assume all output files are in the same directory
-    dir_output = path.split(figure_file)[0]
+    dir_output = path.split(data_file)[0]
     if not path.exists(dir_output):
         os.makedirs(dir_output)
 

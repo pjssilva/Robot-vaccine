@@ -125,11 +125,10 @@ struct SEIR_Parameters
     SEIR parameters with mobility information (out, M, Mt).
     """
     function SEIR_Parameters(tinc, tinf, rep, ndays, s1, e1, i1, r1, alternate, availICU, 
-        time_icu, rho_icu_ts, window, out, M, Mt, r_atten, icu_atten, max_doses)
+        time_icu, rho_icu_ts, window, out, M, Mt, r0pop, r_atten, icu_atten, max_doses)
 
         # Default subpopulation distribution is hard coded for now.
         subpop = [0.30, 0.48, 0.14, 0.08]
-        r0pop = [1.0, 1.3, 1.0, 1.0]
         icupop = [0.06, 0.58, 2.06, 5.16]
         contact = [
             0.57 0.27 0.10 0.06;
