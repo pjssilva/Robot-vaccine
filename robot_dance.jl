@@ -83,7 +83,8 @@ struct SEIR_Parameters
     SEIR parameters with mobility information (out, M, Mt) and multiple populations.
     """
     function SEIR_Parameters(tinc, tinf, rep, ndays, s1, e1, i1, r1, alternate, availICU, 
-        time_icu, rho_icu_ts, window, out, M, Mt, subpop, r0pop, icupop, contact)
+        time_icu, rho_icu_ts, window, out, M, Mt, subpop, r0pop, icupop, contact, 
+        r_atten, icu_atten, max_doses)
         ls1 = length(s1)
         @assert length(e1) == ls1
         @assert length(i1) == ls1
@@ -107,15 +108,10 @@ struct SEIR_Parameters
         @assert isapprox(sum(contact, dims=2), ones(npops))
 
         # For now vaccine action is hard coded
-        r_atten = [1.0, 0.5, 0.3]
-        icu_atten = [1.0, 1.0, 1.0]
         vstates = length(r_atten)
         effect_window = [14, 14]
-        doses_min_window, doses_max_window = [28], [90]
-        max_doses = 0.015*ones(ndays)
-        max_doses[1:30] .= 0.001
-        max_doses[31:150] .= 0.005
-        
+        doses_min_window, doses_max_window = [28], [84]
+
         new(tinc, tinf, rep, ndays, ls1, s1, e1, i1, r1, alternate, availICU, time_icu,
             rho_icu_ts, window, out, M, Mt,
             vstates, r_atten, icu_atten, effect_window, doses_min_window, doses_max_window, max_doses,
@@ -129,7 +125,7 @@ struct SEIR_Parameters
     SEIR parameters with mobility information (out, M, Mt).
     """
     function SEIR_Parameters(tinc, tinf, rep, ndays, s1, e1, i1, r1, alternate, availICU, 
-        time_icu, rho_icu_ts, window, out, M, Mt)
+        time_icu, rho_icu_ts, window, out, M, Mt, r_atten, icu_atten, max_doses)
 
         # Default subpopulation distribution is hard coded for now.
         subpop = [0.30, 0.48, 0.14, 0.08]
@@ -143,7 +139,8 @@ struct SEIR_Parameters
         ]
 
         SEIR_Parameters(tinc, tinf, rep, ndays, s1, e1, i1, r1, alternate, availICU, 
-            time_icu, rho_icu_ts, window, out, M, Mt, subpop, r0pop, icupop, contact)
+            time_icu, rho_icu_ts, window, out, M, Mt, subpop, r0pop, icupop, contact,
+            r_atten, icu_atten, max_doses)
     end
 
     """
@@ -159,7 +156,7 @@ struct SEIR_Parameters
         M = spzeros(ls1, ls1)
         Mt = spzeros(ls1, ls1)
         SEIR_Parameters(tinc, tinf, rep, ndays, s1, e1, i1, r1, alternate, availICU, 
-            time_icu, rho_icu_ts, window, out, M, Mt)
+            time_icu, rho_icu_ts, window, out, M, Mt, [1.0], [1.0])
     end
 
     """
@@ -229,7 +226,7 @@ Build an optimization model with the SEIR discretization as constraints. The ini
 parameters are not initialized and remain free. This can be useful, for example, to fit the
 initial parameters to observed data.
 """
-function seir_model_with_free_initial_values(prm, verbosity=0, tau=3, test_efficacy=0.8)
+function seir_model_with_free_initial_values(prm, verbosity=0)
     # Create the optimization model.
     # I am reverting to mumps because I can not limit ma97 to use
     # only the actual cores in my machine and mumps seems to be doing 
@@ -432,8 +429,8 @@ end
 Creates a SEIR model setting the initial parameters for the SEIR variables from prm.
 For now it splits the origina S, E, I, R proportionally to prm.subpop.
 """
-function seir_model(prm, verbosity, tau=3, test_efficacy=0.8)
-    m = seir_model_with_free_initial_values(prm, verbosity, tau, test_efficacy)
+function seir_model(prm, verbosity)
+    m = seir_model_with_free_initial_values(prm, verbosity)
 
     # Initial state
     s1, e1, i1, r1 = m[:s][:, :, 1], m[:e][:, :, 1], m[:i][:, :, 1], m[:r][:, :, 1]
@@ -556,18 +553,16 @@ time windows.
 - hammer_durarion: Duration in days of a intial hammer phase.
 - hammer: Rt level that should be achieved during hammer phase.
 - min_rt: minimum rt achievable outside the hammer phases.
-- pools: groups of regions to be treated as a pool in the ICU constraints.
 """
 function window_control_multcities(prm, population, target, force_difference, 
-    hammer_duration=0, hammer=0.89, min_rt=1.0, pools=[[c] for c in 1:prm.ncities],
-    verbosity=0, test_budget=0, tests_off=Int64[], 
-    tau=3, test_efficacy=0.8, daily_tests=0, proportional_test=false)
+    hammer_duration=0, hammer=0.89, min_rt=1.0, verbosity=0)
     @assert sum(mod.(hammer_duration, prm.window)) == 0
+    pools = [[1]]
 
     # TODO: These should be parameters - first try
     times_series = [Simple_ARTS(prm.rho_icu_ts[c, :]...) for c in 1:prm.ncities]
 
-    m = seir_model(prm, verbosity, tau, test_efficacy)
+    m = seir_model(prm, verbosity)
 
     if verbosity >= 1
         println("Setting limits for rt...")
@@ -690,16 +685,39 @@ function window_control_multcities(prm, population, target, force_difference,
             end
         end
 
-        # Respect the maximum ammount of vaccine doses
+        # Respect the maximum daily ammount of vaccine doses
         for t = 1:prm.ndays
             @constraint(m,
                 sum(applied[p, d, t] for p=1:prm.npops for d=1:prm.vstates - 1) <= prm.max_doses[t]
             )
         end
+
+        # # Give all the doses to all that received the first dose
+        # @constraint(m, [p=1:prm.npops, d=2:prm.vstates - 1],
+        #     cumv[p, d, prm.ndays] >= cumv[p, d - 1, prm.ndays]
+        # )
+
+        # Give all the doses to 85% of the population
+        @constraint(m, [p=1:prm.npops],
+            sum(s[p, prm.vstates, prm.ndays] + e[p, prm.vstates, prm.ndays]
+                + i[p, prm.vstates, prm.ndays] + r[p, prm.vstates, prm.ndays] 
+                for p = 1:prm.npops) >= 0.85
+        )
     end
+
     if verbosity >= 1
         println("Setting constraints to define vaccines... Ok!")
     end
+
+    # Used to compute the total rt variation
+    # @variable(m, ttv1[p=1:prm.npops, d=1:prm.vstates - 1, t=2:prm.ndays])
+    # @variable(m, ttv2[p=1:prm.npops, d=1:prm.vstates - 1, t=2:prm.ndays] >= 0)
+    # @constraint(m, con_ttv[p=1:prm.npops, d=1:prm.vstates - 1, t=2:prm.ndays], 
+    #     ttv1[p, d, t] >= v[p, d, t - 1] - v[p, d, t]
+    # )
+    # @constraint(m, con_ttv2[p=1:prm.npops, d=1:prm.vstates - 1, t=2:prm.ndays], 
+    #     ttv2[p, d, t] >= v[p, d, t] - v[p, d, t - 1]
+    # )
 
     # Compute the weights for the objectives terms
     if verbosity >= 1
@@ -720,6 +738,12 @@ function window_control_multcities(prm, population, target, force_difference,
         #-sum(s[d, prm.ndays] for d =1:prm.vstates)
         # Paga para aplicar vacinas
         # + sum(applied)
+        + 10*sum((v[p, d, t] - v[p, d, t - 1])^2 
+            for p=1:prm.npops for d=1:prm.vstates - 1 for t=2:prm.ndays
+        )
+        # + 1.0e-4*(sum(ttv1) + sum(ttv2))
+        # + prm.window*sum(effect_pop[c]/mean_population*(prm.rep - rt[d])^2
+        #     for c = 1:prm.ncities for d = hammer_duration[c]+1:prm.window:prm.ndays)
     )
     if verbosity >= 1
         println("Computing objective function... Ok!")

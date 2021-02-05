@@ -168,8 +168,7 @@ def read_data(options, verbosity=0):
 
 
 def prepare_optimization(basic_prm, cities_data, mob_matrix, target, hammer_data, 
-    force_dif=1, pools=None, verbosity=0, test_budget=0, tests_off=[], 
-    tau=3, test_efficacy=0.8, daily_tests=0, proportional_tests=False):
+    force_dif, r_atten,  icu_atten, max_doses, verbosity=0):
     ncities, ndays = len(cities_data.index), int(basic_prm["ndays"])
     if force_dif is 1:
         force_dif = np.ones((ncities, ndays))
@@ -205,22 +204,15 @@ def prepare_optimization(basic_prm, cities_data, mob_matrix, target, hammer_data
     Julia.hammer_level = hammer_data["level"].values
     Julia.verbosity = verbosity
     Julia.window = basic_prm["window"]
-    Julia.test_budget = test_budget
-    Julia.tests_off = tests_off
-    Julia.tau = tau
-    Julia.test_efficacy = test_efficacy
-    Julia.daily_tests = daily_tests
-    Julia.proportional_tests = proportional_tests
-    if pools is None:
-        Julia.eval("pools = [[c] for c in 1:length(s1)]")
-    else:
-        Julia.pools = pools
+    Julia.r_atten = r_atten
+    Julia.icu_atten = icu_atten
+    Julia.max_doses = max_doses
     Julia.eval("""
         prm = SEIR_Parameters(tinc, tinf, rep, ndays, s1, e1, i1, r1, alternate,
-            availICU, time_icu, rho_icu_ts, window, out, sparse(M), sparse(Mt))
+            availICU, time_icu, rho_icu_ts, window, out, sparse(M), sparse(Mt), 
+            r_atten, icu_atten, max_doses)
         m = window_control_multcities(prm, population, target, force_dif, hammer_duration, 
-            hammer_level, min_level, pools, verbosity, test_budget, tests_off,
-            tau, test_efficacy, daily_tests, proportional_tests);
+            hammer_level, min_level, verbosity);
     """)
 
     # Check if there is a ramp parameter (delta_rt_max)
@@ -596,10 +588,14 @@ def optimize_and_show_results(basic_prm, figure_file, data_file, cities_data, ta
 
     Julia.eval("""
         optimize!(m)
+        opt_OK = (termination_status(m) == MOI.LOCALLY_SOLVED)
         i = reshape(sum(value.(m[:i]), dims=(1,2)) .+ sum(value.(m[:ir]), dims=(1, 2)), (:, ))
         pre_rt = value.(m[:rt])
         rt = expand(pre_rt, prm)
     """)
+
+    if Julia.opt_OK == False:
+        print("***** WARNING: Optimization was not sucessful - double check the model and the solution")
 
     if verbosity >= 1:
         print('Solving Robot-dance... Ok!')
