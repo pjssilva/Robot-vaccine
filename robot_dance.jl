@@ -84,7 +84,7 @@ struct SEIR_Parameters
     """
     function SEIR_Parameters(tinc, tinf, rep, ndays, s1, e1, i1, r1, alternate, availICU, 
         time_icu, rho_icu_ts, window, out, M, Mt, subpop, r0pop, icupop, contact, 
-        r_atten, icu_atten, max_doses)
+        r_atten, icu_atten, max_doses, doses_min_window, doses_max_window)
         ls1 = length(s1)
         @assert length(e1) == ls1
         @assert length(i1) == ls1
@@ -110,11 +110,11 @@ struct SEIR_Parameters
         # For now vaccine action is hard coded
         vstates = length(r_atten)
         effect_window = [14, 14]
-        doses_min_window, doses_max_window = [28], [84]
 
         new(tinc, tinf, rep, ndays, ls1, s1, e1, i1, r1, alternate, availICU, time_icu,
-            rho_icu_ts, window, out, M, Mt,
-            vstates, r_atten, icu_atten, effect_window, doses_min_window, doses_max_window, max_doses,
+            rho_icu_ts, window, out, M, Mt,            
+            vstates, r_atten, icu_atten, 
+            effect_window, doses_min_window, doses_max_window, max_doses,
             npops, subpop, r0pop, icupop, contact)
     end
 
@@ -125,7 +125,8 @@ struct SEIR_Parameters
     SEIR parameters with mobility information (out, M, Mt).
     """
     function SEIR_Parameters(tinc, tinf, rep, ndays, s1, e1, i1, r1, alternate, availICU, 
-        time_icu, rho_icu_ts, window, out, M, Mt, r0pop, r_atten, icu_atten, max_doses)
+        time_icu, rho_icu_ts, window, out, M, Mt, r0pop, r_atten, icu_atten, max_doses,
+        doses_min_window, doses_max_window)
 
         # Default subpopulation distribution is hard coded for now.
         subpop = [0.30, 0.48, 0.14, 0.08]
@@ -139,7 +140,7 @@ struct SEIR_Parameters
 
         SEIR_Parameters(tinc, tinf, rep, ndays, s1, e1, i1, r1, alternate, availICU, 
             time_icu, rho_icu_ts, window, out, M, Mt, subpop, r0pop, icupop, contact,
-            r_atten, icu_atten, max_doses)
+            r_atten, icu_atten, max_doses, doses_min_window, doses_max_window)
     end
 
     """
@@ -155,7 +156,8 @@ struct SEIR_Parameters
         M = spzeros(ls1, ls1)
         Mt = spzeros(ls1, ls1)
         SEIR_Parameters(tinc, tinf, rep, ndays, s1, e1, i1, r1, alternate, availICU, 
-            time_icu, rho_icu_ts, window, out, M, Mt, [1.0], [1.0])
+            time_icu, rho_icu_ts, window, out, M, Mt, [1.0], [1.0], [1.0], Float64[],
+            Float64[], Float64[])
     end
 
     """
