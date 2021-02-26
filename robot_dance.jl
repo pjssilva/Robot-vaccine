@@ -14,6 +14,8 @@ using LinearAlgebra
 using SparseArrays
 using Distributions
 import Statistics.mean
+using CSV
+using DataFrames
 include("simple_arts.jl")
 
 """
@@ -509,10 +511,30 @@ function window_control_multcities(prm, population, target, force_difference,
     for c = 1:prm.ncities, d = 1:prm.window:hammer_duration[c]
         fix(rt[d], hammer[c]; force=true)
     end
-    
-    # Set the minimum rt achievable after the hammer phase.
-    for c = 1:prm.ncities, d = hammer_duration[c] + 1:prm.window:prm.ndays
-        set_lower_bound(rt[d], min_rt)
+
+    rt_profile_data = "profile_data.csv"
+    has_rt_profile = isfile(rt_profile_data)
+    if has_rt_profile
+        println("********************** Using an rt profile")
+        df = data = CSV.read(rt_profile_data, DataFrame)
+        target_rt = (df[df.Variable .== "rt", 4:end])[1, :]
+        total_target = 0
+        for t = hammer_duration[1] + 1:prm.window:prm.ndays
+            total_target += target_rt[t]
+            if target_rt[t] < 0.99*prm.rep
+                set_lower_bound(rt[t], min_rt)
+            else
+                set_lower_bound(rt[t], target_rt[t])
+            end
+        end
+        @constraint(m,
+             sum(rt[t] for t=hammer_duration[1] + 1:prm.window:prm.ndays) >= total_target 
+        )
+    else
+        # Set the minimum rt achievable after the hammer phase.
+        for c = 1:prm.ncities, d = hammer_duration[c] + 1:prm.window:prm.ndays
+            set_lower_bound(rt[d], min_rt)
+        end
     end
     if verbosity >= 1
         println("Setting limits for rt... Ok!")
@@ -535,7 +557,7 @@ function window_control_multcities(prm, population, target, force_difference,
     first_pool_day = [minimum(firstday[pool]) for pool in pools]    
     pool_population = [sum(population[pool]) for pool in pools]
     s, e, r, v, ir = m[:s], m[:e], m[:r], m[:v], m[:ir]
-    @variable(m, V[pool_id=1:n_pools, p=1:prm.npops, d=first_pool_day[pool_id]:prm.ndays - prm.time_icu] >= 0)
+    @variable(m, V[pool_id=1:n_pools, p=1:prm.npops, d=1:prm.ndays] >= 0)
     for pool_id in 1:n_pools
         pool = pools[pool_id]
         # Uses the time series that gives the ratio of IC needed from the first
@@ -547,8 +569,8 @@ function window_control_multcities(prm, population, target, force_difference,
         # infected and potentially go to ICU.
         # I simplified this assuming that there is a single region (and it is)
         # Whole pool.
-        @constraint(m, [p=1:prm.npops, t=first_pool_day[pool_id]:prm.ndays - prm.time_icu],
-            V[pool_id, p, t] == prm.time_icu/prm.tinf*(
+        @constraint(m, [p=1:prm.npops, t=1:prm.ndays],
+            V[pool_id, p, t] == prm.icupop[p]*prm.time_icu/prm.tinf*(
                 sum(prm.icu_atten[d]*(1.0 - v[p, d, t])*i[p, d, t] for d=1:prm.vstates - 1) 
                 + prm.icu_atten[prm.vstates]*i[p, prm.vstates, t] 
                 + sum(2.0*prm.icu_atten[d]*ir[p, d, t] for d=1:prm.vstates - 1)
@@ -559,7 +581,7 @@ function window_control_multcities(prm, population, target, force_difference,
             Eicu, safety_level = iterate(ρ_icu)
             if t >= first_pool_day[pool_id]
                 @constraint(m,
-                    sum((Eicu + safety_level)*prm.icupop[p]*V[pool_id, p, t] for p=1:prm.npops) <= 
+                    (Eicu + safety_level)*sum(V[pool_id, p, t] for p=1:prm.npops) <= 
                     sum(target[c, t]*population[c]*prm.availICU[c] for c in pool) / pool_population[pool_id]
                 )
             end
@@ -634,12 +656,19 @@ function window_control_multcities(prm, population, target, force_difference,
         #     cumv[p, d, prm.ndays] >= cumv[p, d - 1, prm.ndays]
         # )
 
-        # Give all the doses to 85% of the population
-        @constraint(m, [p=1:prm.npops],
-            sum(s[p, prm.vstates, prm.ndays] + e[p, prm.vstates, prm.ndays]
-                + i[p, prm.vstates, prm.ndays] + r[p, prm.vstates, prm.ndays] 
-                for p = 1:prm.npops) >= 0.85
-        )
+        # Give all the doses to 95% of the population by the first time it is 
+        # possible
+        cum_md = cumsum(prm.max_doses)
+        min_vacc = 0.95
+        target_day = argmax(cum_md .>= min_vacc*(prm.vstates - 1)) + 7 
+        if target_day <= prm.ndays
+            @constraint(m, 
+                sum(applied[p, prm.vstates - 1, t] 
+                    for p=1:prm.npops for t=1:target_day) 
+                >= min_vacc
+            )
+        end
+        println("Target date to $(100 * min_vacc)% cover = ", target_day)
     end
 
     if verbosity >= 1
@@ -667,21 +696,33 @@ function window_control_multcities(prm, population, target, force_difference,
         dif_matrix[c, d] = force_difference[c, d] / mean_population / (2*prm.ncities)
     end
     # Define objective
-    @objective(m, Min,
-        # Try to keep as many people working as possible
-        prm.window*sum(effect_pop[c]/mean_population*(prm.rep - rt[d])
-            for c = 1:prm.ncities for d = hammer_duration[c]+1:prm.window:prm.ndays)
-        # Maximize S
-        #-sum(s[d, prm.ndays] for d =1:prm.vstates)
-        # Paga para aplicar vacinas
-        # + sum(applied)
-        + 10*sum((v[p, d, t] - v[p, d, t - 1])^2 
-            for p=1:prm.npops for d=1:prm.vstates - 1 for t=2:prm.ndays
+    if has_rt_profile
+        # Minimize the number of UTI needed - I am assuming that Eicu is constant,
+        # that is, there is no trend in the time series. If that is not the case
+        # Eicu should multiply V below
+        @objective(m, Min,
+            sum(V[1, p, t] for p=1:prm.npops for t=1:prm.ndays)
+            + 0.0e-1*sum((v[p, d, t] - v[p, d, t - 1])^2 
+                for p=1:prm.npops for d=1:prm.vstates - 1 for t=2:prm.ndays
+            )
         )
-        # + 1.0e-4*(sum(ttv1) + sum(ttv2))
-        # + prm.window*sum(effect_pop[c]/mean_population*(prm.rep - rt[d])^2
-        #     for c = 1:prm.ncities for d = hammer_duration[c]+1:prm.window:prm.ndays)
-    )
+    else
+        @objective(m, Min,
+            # Try to keep as many people working as possible
+            prm.window*sum(effect_pop[c]/mean_population*(prm.rep - rt[d])
+                for c = 1:prm.ncities for d = hammer_duration[c]+1:prm.window:prm.ndays)
+            # Maximize S
+            #-sum(s[d, prm.ndays] for d =1:prm.vstates)
+            # Paga para aplicar vacinas
+            # + sum(applied)
+            + sum((v[p, d, t] - v[p, d, t - 1])^2 
+                for p=1:prm.npops for d=1:prm.vstates - 1 for t=2:prm.ndays
+            )
+            # + 1.0e-4*(sum(ttv1) + sum(ttv2))
+            # + prm.window*sum(effect_pop[c]/mean_population*(prm.rep - rt[d])^2
+            #     for c = 1:prm.ncities for d = hammer_duration[c]+1:prm.window:prm.ndays)
+        )
+    end
     if verbosity >= 1
         println("Computing objective function... Ok!")
     end

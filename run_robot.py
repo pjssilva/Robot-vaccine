@@ -541,6 +541,10 @@ def save_result(basic_prm, cities_data, target, filename):
     var_ei = get_jump_variable('ei')
     var_ir = get_jump_variable('ei')
     var_v = get_jump_variable('v')
+    var_V = get_jump_variable('V')
+    icupop = Julia.prm.icupop / Julia.prm.tinf
+    mean_icu = (cities_data["rho_min"][0] + 
+        (cities_data["rho_max"][0] - cities_data["rho_min"][0])*cities_data["intercept"][0])
     Julia.eval("rt = reshape(expand(value.(m[:rt]), prm), (:,))")
     n = len(Julia.s[0, 0, :])
     df = []
@@ -555,6 +559,7 @@ def save_result(basic_prm, cities_data, target, filename):
             df.append(["ei", p, d] + list(var_ei[p, d, :])) 
             df.append(["ir", p, d] + list(var_ir[p, d, :])) 
             df.append(["v", p, d] + list(var_v[p, d, :])) 
+        df.append(["icu_demand", p, -1] + list(mean_icu/basic_prm["time_icu"]*var_V[0, p, :])) 
 
     df.append(["rt", -1, -1] + list(Julia.rt)) 
 
