@@ -660,7 +660,12 @@ function window_control_multcities(prm, population, target, force_difference,
         # possible
         cum_md = cumsum(prm.max_doses)
         min_vacc = 0.95
-        target_day = argmax(cum_md .>= min_vacc*(prm.vstates - 1)) + 7 
+        if minimum(prm.doses_max_window - prm.doses_min_window) < 7
+            delta = 28
+        else
+            delta = 7
+        end
+        target_day = argmax(cum_md .>= min_vacc*(prm.vstates - 1)) + delta
         if target_day <= prm.ndays
             @constraint(m, 
                 sum(applied[p, prm.vstates - 1, t] 
