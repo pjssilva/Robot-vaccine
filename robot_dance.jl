@@ -524,7 +524,7 @@ function window_control_multcities(prm, population, target, force_difference,
             if target_rt[t] < 0.99*prm.rep
                 set_lower_bound(rt[t], min_rt)
             else
-                set_lower_bound(rt[t], target_rt[t])
+                fix(rt[t], target_rt[t]; force=true)
             end
         end
         @constraint(m,
@@ -663,7 +663,7 @@ function window_control_multcities(prm, population, target, force_difference,
         if minimum(prm.doses_max_window - prm.doses_min_window) < 7
             delta = 28
         else
-            delta = 7
+            delta = 14
         end
         target_day = argmax(cum_md .>= min_vacc*(prm.vstates - 1)) + delta
         if target_day <= prm.ndays
