@@ -1,35 +1,10 @@
-# Robot Dance
+# Robot Vaccine
 
 ## Warning
 
-The code is passing through a clean up after the submission of the manuscripts.
+The code is is derived from the Robot Dance project tayored to analyze vaccine deployment.
 
-In order to reproduce the manuscripts experiments you should download the 
-respective tag:
-
-* `m1.X`: For the manuscript on using optimization techniques to design
-  distancing profiles under a multiregion setting. To reproduce the experiments,
-  run the `manuscript_experiments.ipynb` notebook.
-
-* `m2.X`: For the new version of the code that incorporate testing. To reproduce
-  the experiments, run the `test_control_test.ipynb` notebook.
-
-It should possible to run the test once you  add the dependencies (see below).
-
-##
-
-This repository contains the code used in the manuscript 
-[Robot Dance: a mathematical optimization platform for intervention against Covid-19 in a complex network](http://www.optimization-online.org/DB_HTML/2020/10/8054.html).
-
-The idea is to sue control and optimization to design efficient alternate mitigation
-strategies for Covid-19 and other infectious diseases. It uses an adapted SEIR model that
-takes into account the mobility between different cities. The objective is to design a
-protocols that controls the number of infected to a maximum level while alternating between
-more stringent and more light mitigation and between cities (or regions), so that the State
-or country does not close all at once.
-
-The code up to now should work for a few cities (or regions), a couple of tens. We have
-some ideas to make it scale to the hundreds.
+You can use it to reproduce the experiments in the companion manuscript.
 
 ## Installing dependencies
 
@@ -54,78 +29,7 @@ After that install [PyJulia](https://github.com/JuliaPy/pyjulia).
 
 ## Running and input files
 
-To run the basic model described in the report on a problem instance run the Python code
-`run_robot.py`. This code expects the input files to be located in the `data` sub-directory.
-It expects 4 input files in the subfolder `data`:
-
-* `basic_paramters.csv`: simple CSV file with basic parameters, one per line in the format
-  `<parameter name>, <paramter values>`. The parameters are:
-    * `tinc`: Incubation time for the SEIR Model (default 5.2).
-    * `tinf`: Infected time for SEIR model (default 2.9).
-    * `rep`: reproduction rate of the virus without mitigation (default 2.5).
-    * `time_icu`: mean time a patient spend in ICU.
-    * `need_icu`: ratio of inffected that need ICU care.
-    * `alternate`: controls the ammount of alternation (default 1.0).
-    * `ndays`: number of days to be considered in the simulation.
-    * `window`: number of days to keep the mitigation level constant.
-    * `min_level`: what is the r0 attainable using the most demanding mitigation.
-    * `delta_rt_max`: (optional) if this parameter is provided, ramp constraints will be added to the model, preventing rt to increase more than `delta_rt_max` between two consecutive periods (`delta_rt_max > 0`).
-
-* `cities_data.csv`: basic cities data in CSV format. It must contain one line per city,
-  with the city name as index and the following named columns:
-    * `S1`: initial value for the S variable in the SEIR model.
-    * `E1`: initial value for the E variable in the SEIR model.
-    * `I1`: initial value for the I variable in the SEIR model.
-    * `R1`: initial value for the R variable in the SEIR model.
-    * `population`: population of the city. 
-    
-  Alternatively to this file, the user can make available the information with the
-  (accumulated) number of infected to estimate the initial data `S1, E1, I1, R1`. This file
-  should be named `pre_cities_data.csv` with columns labeled:
-    * `city`: the city name. 
-    * `state`: the state code if you want to select by state (or a neutral string).
-    * `date`: a date where the accumulated infected was measured, they have to be made 
-       daily from the start of the data for `city` up to a final common day. 
-    * `confirmed`: the *accumulated* number of confirmed cases.
-    * `estimated_population_2019`: contains the estimated population of the city (the
-       same number repeated). 
-  The file can have other columns, but only those will be used by the program.
-
-* `mobility_matrix.csv`: the mobility matrix, with labels and index using the cities names.
-  The cities must be the same cities that appear in `cities_data.csv` and in the same
-  order. The position `(i, j)` of the matrix must contain the ratio of the population of
-  city `i` that goes to city `j`, with the ratio computed with respect to the population of
-  the target city `j`. The diagonal must be 0. Moreover, it there must be an extra, last,
-  column labeled `out` that should contain the ration of the the total population of city
-  at line `i` that leaves the city to work during the day. This ratio should be computed
-  with respect to the population of `i`, the origin. If the file does not exist, the matrix
-  is assumed to be 0 everywhere.
-
-* `target.csv`: a matrix with the maximal amount of infected that is acceptable for each
-  cities (as rows) at each day (as columns). The city names should be used as index and
-  consecutive numbers from 1 to `ndays`as column labels. 
-
-* `hammer_data.csv`: (optional) hammer to be applied in the first days/weeks, if necessary.
-  If this file is provided, the algorithm will check if the hammer phase is long enough for
-  each city; finding that it is not, it will increase the duration by one window and check
-  again, until no city violate the target of number of infected after the hammer phase. It
-  must contain one line per city, with the city name as index and the following named
-  columns:
-    * `duration`: minimum duration of hammer for the city, in days.
-    * `level`: level (`r0`) to be applied during the hammer phase. 
-If this file is not provided, default data will be used: `duration = 0`, `level=0.89` and
-the iterative check above will be performed.
-
-After you have all the files in place with the right names, you can run the code with
-`python run_robot.py` the result will be made available in a file named
-`results/cmd_res.csv`. It has the simulated values for the SEIR variables and the target
-reproducible number at each day, labeled `rt`, for each city. You can also find two
-pictures that help you quicly visualize the curves `results/cmd_i_res.png` and
-`results/cmd_rt_new.png`.
-
-TODO: Add files to describe how desirable is to alternate between any pair of cities (I am
-using the minimum of the squared populations right now) and to turn off alternation after
-the epidemic is controlled by herd immunity in a city, if necessary.
+Different experiments are made using different notebooks. If you need assistence, get in touch.
 
 ### Computational resources.
 
