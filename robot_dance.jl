@@ -244,6 +244,7 @@ function seir_model_with_free_initial_values(prm, verbosity=0)
     end
 
     m = Model(optimizer_with_attributes(Ipopt.Optimizer,
+        "tol" => 1.0e-6, "constr_viol_tol" => 1.0e-10, 
         "print_level" => verbosity_ipopt, "linear_solver" => best_linear_solver()))
     if verbosity >= 1
         println("Initializing optimization model... Ok!")
@@ -432,7 +433,7 @@ end
 Creates a SEIR model setting the initial parameters for the SEIR variables from prm.
 For now it splits the origina S, E, I, R proportionally to prm.subpop.
 """
-function seir_model(prm, verbosity)
+function seir_model(prm, verbosity=0)
     m = seir_model_with_free_initial_values(prm, verbosity)
 
     # Initial state
@@ -528,7 +529,7 @@ function window_control_multcities(prm, population, target, force_difference,
             end
         end
         @constraint(m,
-             sum(rt[t] for t=hammer_duration[1] + 1:prm.window:prm.ndays) >= total_target 
+             1/prm.ndays*sum(rt[t] for t=hammer_duration[1] + 1:prm.window:prm.ndays) >= 1/prm.ndays*total_target 
         )
     else
         # Set the minimum rt achievable after the hammer phase.
