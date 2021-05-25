@@ -1,0 +1,94 @@
+\documentclass{article}
+
+\usepackage{amsmath}
+\usepackage{hyperref}
+
+\newcommand{\I}{{\mathcal{I}}}
+
+\usepackage{tikz}
+\usetikzlibrary{shapes,arrows,positioning,calc}
+\title{Simulation 1}
+
+\begin{document}
+
+\section{Parameters}
+
+\begin{itemize}
+    \item $T_{inc}$: mean incubation time in days. I am using 5.2 as in the SIREV paper.
+
+    \item $T_{inf}$: mean infectious time in days. I am using 2.9 as in the SIREV paper.
+
+    \item $R_0$: 1.8 to model a ``new normal'' as in the SIREV paper.
+
+    \item Initial SEIR state for each population: obtained roundig (down) the
+    values obatining from SP: S0=0.685751 E0=0.009905 I0=0.005572 R0=0.298772. This was obtained using a subnotification factor of 7.6 to match the recovered proportion described in \href{https://www1.folha.uol.com.br/equilibrioesaude/2021/02/em-sp-um-terco-dos-adultos-tiveram-covid-taxa-sobe-a-quase-40-entre-negros.shtml}{a recent sorolo inquiry published in Folha}.
+        
+    {\color{red} I am using then $S0=68.5\%, E0=1.0\%, I0=0.6\%, R0=29.9\%$. I
+    will assume that the subpopulations will conform to this distribution
+    according to their size.} 
+    
+    \item The time window to choose a different social distancing profile
+    ($r_t$). I am using 14 days as before. 
+
+    \item The age groups: {\color{red} The age groups will be $[0, 19],\ [20, 49], [50, 64],  [65, \infty)$.} 
+    
+    \item Relative size of each subpopulation. Using the census from 2010 in SP, I get to: 30\%, 48\%, 14\%, 8\%. 
+
+    \item Mean ICU time: I am using 7 days in the Robot test paper.
+    
+    \item Number of ICUs available (Claudia): population = 44,639,899, Available
+    ICU 7812. Ratio of Available ICU = 0,0175\% (or 17.5 for 100K habitants).
+    
+    \item Mean ICU demand: SP data suggest mean ICU necessity of
+    0.00956607 (the ratio $ICU_t$ in SiRev). The time series would be this
+    constant value plus a white noise with standard deviation 0.00399146, both
+    scaled. Since I am using "rounded" versions of SP data in this test I will
+    employ ratio 1\% and the standard deviation of the white noise equal
+    0.004. {\color{red} But we still need to come up with a way to derive from
+    these numbers the ICU necessity of each population.}
+
+    \item Factor to correct ICU demand: $[0, 19]:\ 0.06$, $[20, 49]:\ 0.58$,
+    $[50, 64]:\ 2.06$ e $[65, 200]:\ 5.16$.
+    
+    \item The number of days needed for one and two doses to make effect: 14
+    days for both (Claudio, Tiago). This is the amount of time after the vaccine
+    that allow the transition for the lower states.
+    
+    \item Minimum number of days before the second dose (I am assuming that it
+    is at least $T_{inc} / 2$ longer than the number of days needed for the
+    vaccine to make effect): 28 (Claudio, Tiago).
+
+    \item Maximum number of days between the two doses: 3 months = 90 days.
+    
+    \item Number of vaccines doses that can be deployed each day (as a
+    proportion of the population size): 0.1\% for 30 days (up to March), 0.5\%
+    from 31 to 150 (March to June)  1.5\% from there on (Claudio, Tiago).
+    
+    \item How much the number of doses attenuate the need for ICU beds. If used
+    I will go with 50\% for one dose and 70\% for two doses. (Claudio, Tiago). 
+
+    \item $a_p$: How much one and two doses attenuate transmission: again
+    50\% and 70\% if used. (Claudio, Tiago)
+
+    \item $b_p$: A factor to multiply the overall $R0$ of each subpopulation to
+    say whether subpopulation $p$ is more or less susceptible than the overall
+    population: {\color{red} I will use $1.0$ for $[0, 19]$, $1.3$ for $[20,
+    49]$, $1.0$ for $[50, 64]$ and $1.0$ for $[65, \infty)$.} (Claudio, Tiago).
+
+    \item $C$: the contact matrix (computed from the contact matrix given by Thiago, $C_{i, j}$ among the contacts of $i$ the proportion that it is made
+    with people from $j$):
+
+    \begin{verbatim}
+                0    20   50   65
+                19   49   64   200
+        0  19  0.57 0.27 0.10 0.06
+        20 49  0.20 0.59 0.15 0.06
+        50 64  0.15 0.46 0.27 0.12
+        65 200 0.18 0.24 0.18 0.39
+    \end{verbatim}
+    
+    \item Objective: minimize the number where some kind of social distancing is
+    needed.
+\end{itemize}
+
+\end{document}
